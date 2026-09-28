@@ -1,6 +1,7 @@
+// FROZEN copy of engine.js as it was before data file v2 (Phase 0, Sep 2026). Do not edit.
+// tests/migration.test.js runs v1 files through this and through the current engine + migrate()
+// and requires identical figures. It is test code only and is never loaded by the app.
 // ---------- Tally projection engine (pure functions, no UI) ----------
-// Works on the current data file version only (see model.js); older files are migrated before they get here.
-const EM = typeof TallyModel !== 'undefined' ? TallyModel : require('./model.js');
 const GROUPS = {
   ss_isa:   { label: 'Stocks & shares ISAs', pool: 'isa',  kind: 'ss' },
   cash_isa: { label: 'Cash ISAs',            pool: 'isa',  kind: 'cash' },
@@ -9,7 +10,6 @@ const GROUPS = {
   card:     { label: 'Credit cards',         pool: 'cash' },
   card_0:   { label: '0% credit cards',      pool: 'other' },
   tax:      { label: 'Tax owed',             pool: 'other' },
-  pension:  { label: 'Pensions',             pool: 'other' },
 };
 
 function ym(dateStr) { const [y, m] = dateStr.split('-').map(Number); return { y, m }; }
@@ -63,14 +63,9 @@ function snapshotTotals(data, snap) {
   return t;
 }
 
-// The regular budget in one month ('YYYY-MM', default this month): flows that are running then.
-// One-offs are left out - they are not part of what a normal month looks like.
-function monthlyBudget(data, when) {
-  const k = EM.monthKey(when || new Date().toISOString().slice(0, 7));
-  const live = data.flows.filter(f => f.kind !== 'oneoff' && EM.flowActive(f, k));
-  const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + (+f.amount || 0), 0);
-  const mPay = mortgageTotals(data).payment;
-  const spend = live.filter(f => f.kind === 'spend').reduce((s, f) => s + (f.linked === 'mortgage' ? mPay : +f.amount || 0), 0);
+function monthlyBudget(data) {
+  const income = data.income.reduce((s, i) => s + (+i.monthly || 0), 0);
+  const spend = data.spending.reduce((s, l) => s + (l.linked === 'mortgage' ? mortgageTotals(data).payment * 12 : (+l.annual || 0)), 0) / 12;
   const buffer = spend * (+data.bufferPct || 0) / 100;
   return { income, spend, buffer, out: spend + buffer, surplus: income - spend - buffer };
 }
@@ -107,17 +102,8 @@ function project(data, scenarioKey, months) {
   }));
   const anyBal = parts.some(p => p.bal != null);
 
-  // ISA allowance is per person. Top-ups fill people in r.isaFillOrder: the first person's allowance
-  // is used up before the next person's. Re-deposit room (money taken out of a flexible ISA, which can
-  // go back in the same tax year without new allowance) is tracked for the household.
   let ty = taxYearOf(k0);
-  const who = r.isaFillOrder && r.isaFillOrder.length ? r.isaFillOrder : ['M'];
-  const per = +r.isaPerPerson || 0;
-  const freshBy = {};
-  for (const p of who) freshBy[p] = Math.max(0, per - (ty === +r.isaUsedTaxYear ? (+(r.isaUsedBy || {})[p] || 0) : 0));
-  const freshTotal = () => who.reduce((s, p) => s + freshBy[p], 0);
-  const useFresh = amt => { for (const p of who) { const u = Math.min(amt, freshBy[p]); freshBy[p] -= u; amt -= u; } };
-  let fresh = freshTotal();
+  let fresh = Math.max(0, (+r.isaAllowance || 0) - (ty === +r.isaUsedTaxYear ? (+r.isaUsed || 0) : 0));
   let repl = 0;
   const rows = [];
 
@@ -125,7 +111,7 @@ function project(data, scenarioKey, months) {
     const k = k0 + i;
     const date = keyToDate(k);
     const tyNow = taxYearOf(k);
-    if (tyNow !== ty) { ty = tyNow; for (const p of who) freshBy[p] = per; fresh = freshTotal(); repl = 0; }
+    if (tyNow !== ty) { ty = tyNow; fresh = +r.isaAllowance || 0; repl = 0; }
     const yearsIn = tyNow - taxYearOf(k0);             // annual steps each April
     const payF = Math.pow(1 + (sc.payRise || 0) / 100, yearsIn);
     const infF = Math.pow(1 + (sc.inflation || 0) / 100, yearsIn);
@@ -146,18 +132,16 @@ function project(data, scenarioKey, months) {
     const mPay = mParts.reduce((s, p) => s + p.pay, 0), mortgageInterest = mParts.reduce((s, p) => s + p.interest, 0);
     const mBal = anyBal ? mParts.reduce((s, p) => s + (p.bal || 0), 0) : null;
 
-    const live = data.flows.filter(f => EM.flowActive(f, k));
-    const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + (+f.amount || 0) * payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn), 0);
+    const income = data.income.reduce((s, x) => s + (+x.monthly || 0) * payF * Math.pow(1 + (+x.growth || 0) / 100, yearsIn), 0);
     let spend = 0;
-    for (const f of live) {
-      if (f.kind !== 'spend') continue;
-      if (f.linked === 'mortgage') spend += mPay;
-      else spend += (+f.amount || 0) * (f.inflates ? infF : 1);
+    for (const l of data.spending) {
+      if (l.linked === 'mortgage') spend += mPay;
+      else spend += (+l.annual || 0) / 12 * (l.inflates ? infF : 1);
     }
     const buffer = spend * (+data.bufferPct || 0) / 100;
     const surplus = income - spend - buffer;
 
-    const evs = live.filter(f => f.kind === 'oneoff');
+    const evs = data.events.filter(e => e.on && e.date && ymKey(ym(e.date).y, ym(e.date).m) === k);
     const payments = evs.filter(e => e.amount < 0).reduce((s, e) => s + e.amount, 0);
     const receipts = evs.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
     for (const e of evs) if (e.settles && other[e.settles] != null) other[e.settles] = 0;
@@ -169,7 +153,7 @@ function project(data, scenarioKey, months) {
     const floor = +r.cashFloor || 0;
     if (before > floor) {
       topUp = Math.min(before - floor, cap);
-      const fromRepl = Math.min(topUp, repl); repl -= fromRepl; useFresh(topUp - fromRepl); fresh = freshTotal();
+      const fromRepl = Math.min(topUp, repl); repl -= fromRepl; fresh -= (topUp - fromRepl);
       isaCash += topUp * (1 - ssShare); isaSS += topUp * ssShare;
     } else if (before < floor) {
       const need = floor - before;
@@ -185,7 +169,7 @@ function project(data, scenarioKey, months) {
       const gSS = isaSS * (sc.ssReturn || 0) / 100 / 12;
       const gC = isaCash * cashIsaRate / 100 / 12;
       isaSS += gSS; isaCash += gC; growth = gSS + gC;
-      for (const a of accs) if (other[a.id] != null && (a.type === 'savings' || a.type === 'pension')) {
+      for (const a of accs) if (other[a.id] != null && a.type === 'savings') {
         const g = other[a.id] * (+a.rate || 0) / 100 / 12; other[a.id] += g; growth += g;
       }
     }
@@ -193,7 +177,7 @@ function project(data, scenarioKey, months) {
     rows.push({
       k, date, income, spend, buffer, surplus, events: evs, payments, receipts,
       opening, before, topUp, withdraw, shortfall, closing: cash,
-      freshStart, replStart, cap, freshEnd: fresh, freshBy: { ...freshBy }, replEnd: repl, taxYear: tyNow,
+      freshStart, replStart, cap, freshEnd: fresh, replEnd: repl, taxYear: tyNow,
       isaSS, isaCash, isa: isaSS + isaCash, growth, other: otherTotal,
       mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgageParts: mParts,
       net: cash + isaSS + isaCash + otherTotal,

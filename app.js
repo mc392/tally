@@ -36,12 +36,25 @@ function parseNum(s) { if (s == null) return null; const t = String(s).replace(/
 const uid = p => `${p}-${Math.random().toString(36).slice(2, 8)}`;
 
 // ---------- data helpers ----------
-const TYPE_LABEL = { ss_isa: 'Stocks & shares ISA', cash_isa: 'Cash ISA', savings: 'Savings', current: 'Current account', card: 'Credit card', card_0: '0% credit card', tax: 'Tax owed' };
+const TYPE_LABEL = { ss_isa: 'Stocks & shares ISA', cash_isa: 'Cash ISA', savings: 'Savings', current: 'Current account', pension: 'Pension', card: 'Credit card', card_0: '0% credit card', tax: 'Tax owed' };
+const TM = TallyModel;
+const thisMonth = () => todayISO().slice(0, 7);
+const flowsOf = kind => data.flows.filter(f => f.kind === kind);
+const flowById = id => data.flows.find(f => f.id === id);
+// "from Sep 2027", "until Mar 2028", "Sep 2027 – Mar 2028" - blank when it runs all the time
+function flowWhen(f) {
+  if (f.kind === 'oneoff') return f.start ? fMonth(f.start) : 'No month set';
+  if (f.start && f.end) return `${fMonth(f.start, true)} – ${fMonth(f.end, true)}`;
+  if (f.start) return `from ${fMonth(f.start)}`;
+  if (f.end) return `until ${fMonth(f.end)}`;
+  return '';
+}
+const flowLiveNow = f => TM.flowActive(f, TM.monthKey(thisMonth()));
 const LIAB = new Set(['card', 'card_0', 'tax']);
 const POOLS = [
   { key: 'isa', label: 'ISAs', types: ['ss_isa', 'cash_isa'], color: 'var(--c-isa)', note: 'Stocks & shares and cash ISAs. Surplus cash is swept here in the projection.' },
   { key: 'cash', label: 'Cash', types: ['current', 'card'], color: 'var(--c-cash)', note: 'Current accounts less everyday card balances. The projection holds this at your cash floor.' },
-  { key: 'savings', label: 'Savings', types: ['savings'], color: 'var(--c-sav)', note: 'Non-ISA savings accounts.' },
+  { key: 'savings', label: 'Savings', types: ['savings', 'pension'], color: 'var(--c-sav)', note: 'Non-ISA savings accounts.' },
   { key: 'debt', label: 'Other debts', types: ['card_0', 'tax'], color: 'var(--c-debt)', note: '0% cards and tax owed. Settle them with an upcoming payment in Plan.' },
 ];
 const ICONS = {
@@ -72,8 +85,9 @@ function prevValue(id, beforeDate) {
 const PART_KEYS = ['payment', 'balance', 'rate', 'fixEnd', 'newRate', 'termEnd'];
 const partName = (p, i) => p.name || (data.mortgage.parts.length > 1 ? `Part ${i + 1}` : 'Mortgage');
 function normalise(d) {
+  d = TM.migrate(d); // older files are upgraded here; the file itself only changes when it is next saved
   d.people ||= [{ id: 'M', name: 'Me' }, { id: 'C', name: 'Partner' }, { id: 'J', name: 'Joint' }];
-  d.accounts ||= []; d.snapshots ||= []; d.income ||= []; d.spending ||= []; d.events ||= [];
+  d.accounts ||= []; d.snapshots ||= []; d.flows ||= [];
   d.mortgage ||= { payment: 0 };
   if (!Array.isArray(d.mortgage.parts)) {
     // Before parts existed the mortgage was one flat record; it becomes the first (and only) part.
@@ -83,7 +97,7 @@ function normalise(d) {
     d.mortgage = { parts: [part] }; if (o.propertyValue != null) d.mortgage.propertyValue = o.propertyValue;
   }
   if (!d.mortgage.parts.length) d.mortgage.parts.push({ id: uid('mp'), name: '', payment: 0 });
-  d.rules = Object.assign({ cashFloor: 10000, isaAllowance: 40000, isaUsed: 0, isaUsedTaxYear: new Date().getFullYear(), sweepToSS: 0 }, d.rules || {});
+  d.rules = Object.assign({ cashFloor: 10000, isaUsedTaxYear: new Date().getFullYear(), sweepToSS: 0 }, d.rules || {});
   d.bufferPct ??= 5;
   d.scenarios ||= {
     cautious: { name: 'Cautious', growth: false, ssReturn: 0, inflation: 0, payRise: 0 },
@@ -94,7 +108,7 @@ function normalise(d) {
   return d;
 }
 function blankFile() {
-  return normalise({ app: 'tally', version: 1, people: [{ id: 'M', name: 'Me' }, { id: 'C', name: 'Partner' }, { id: 'J', name: 'Joint' }], mortgage: { parts: [{ id: 'main', name: '', payment: 0 }] } });
+  return normalise({ app: 'tally', version: TM.VERSION, flows: [], people: [{ id: 'M', name: 'Me' }, { id: 'C', name: 'Partner' }, { id: 'J', name: 'Joint' }], mortgage: { parts: [{ id: 'main', name: '', payment: 0 }] } });
 }
 
 // ---------- persistence (working copy on this device) ----------
@@ -408,8 +422,8 @@ function vHome() {
   });
 
   const lowest = pr.rows.reduce((b, r) => r.closing < b.closing ? r : b, pr.rows[0]);
-  const nextEv = data.events.filter(e => e.on && e.date >= todayISO().slice(0, 8) + '01').sort((a, b) => a.date.localeCompare(b.date))[0];
-  const bud = monthlyBudget(data);
+  const nextEv = flowsOf('oneoff').filter(e => e.on && e.start && e.start >= thisMonth()).sort((a, b) => a.start.localeCompare(b.start))[0];
+  const bud = monthlyBudget(data, thisMonth());
   const sc = data.scenarios[scenarioKey()];
 
   return {
@@ -434,7 +448,7 @@ function vHome() {
       row({ title: `ISA pot by ${fMonth(end.date)}`, value: amt(end.isa), strong: true, act: 'tab', arg: 'projection' }) +
       row({ title: `Cash by ${fMonth(end.date)}`, value: amt(end.closing), act: 'tab', arg: 'projection' }) +
       row({ title: 'Lowest cash month', sub: fMonth(lowest.date), value: amt(lowest.closing, { color: true }), act: 'push', arg: 'month:' + lowest.k, cls: 'tap' }) +
-      (nextEv ? row({ title: 'Next big item', sub: `${esc(nextEv.name)} · ${fMonth(nextEv.date)}`, value: amt(nextEv.amount, { color: true, sign: true }), act: 'push', arg: 'events' }) : ''),
+      (nextEv ? row({ title: 'Next big item', sub: `${esc(nextEv.name)} · ${fMonth(nextEv.start)}`, value: amt(nextEv.amount, { color: true, sign: true }), act: 'push', arg: 'events' }) : ''),
       `Looking ahead<b>${esc(sc.name)} scenario</b>`)}
     ${group(
       row({ title: 'Coming in', value: amt(bud.income), act: 'tab', arg: 'plan' }) +
@@ -584,9 +598,9 @@ function vProjection() {
         <div><div class="k">Monthly surplus now</div><div class="v amt">${short(R[0].surplus)}</div><div class="n">${sc.payRise || sc.inflation ? `pay +${sc.payRise}% · costs +${sc.inflation}% a year` : 'held flat'}</div></div>
       </div>
       ${short_.length ? group(short_.map(r => row({ title: fMonth(r.date), sub: 'ISAs can’t cover the floor', value: amt(-r.shortfall, { color: true }), act: 'push', arg: 'month:' + r.k })).join(''), 'Shortfalls') : ''}
-      ${group(Object.entries(tys).map(([y, t]) => row({ title: `${y}/${String(+y + 1).slice(2)}`, sub: `In ${short(t.in)} · out ${short(t.out)}`, value: amt(t.left), vsub: 'allowance left' })).join(''), 'ISA allowance by tax year', `Uses your ${money(data.rules.isaAllowance)} household allowance. Money taken out of a flexible ISA can be put back in the same tax year without using new allowance; the projection tracks that separately.`)}
+      ${group(Object.entries(tys).map(([y, t]) => row({ title: `${y}/${String(+y + 1).slice(2)}`, sub: `In ${short(t.in)} · out ${short(t.out)}`, value: amt(t.left), vsub: 'allowance left' })).join(''), 'ISA allowance by tax year', `Uses ${money(data.rules.isaPerPerson)} each for ${esc(data.rules.isaFillOrder.map(person).join(' and '))}, filling ${esc(person(data.rules.isaFillOrder[0]))}’s first. Money taken out of a flexible ISA can be put back in the same tax year without using new allowance; the projection tracks that separately.`)}
       ${group(months, 'Month by month', 'Tap a month for the full cash waterfall and ISA workings.')}
-      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(data.events.filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
+      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
     after: () => { mountChart('c-proj'); mountChart('c-cash'); },
   };
 }
@@ -637,9 +651,10 @@ function vScenario(key) {
 
 // ---------- plan ----------
 function vPlan() {
-  const b = monthlyBudget(data), mt = mortgageTotals(data), r = data.rules;
-  const cats = {}; for (const l of data.spending) { const v = l.linked === 'mortgage' ? mt.payment : (+l.annual || 0) / 12; cats[l.category || 'Other'] = (cats[l.category || 'Other'] || 0) + v; }
-  const inc = data.income.map(i => row({ title: esc(i.name), sub: esc(person(i.owner)) + (i.growth ? ` · +${i.growth}% a year` : ''), value: amt(i.monthly), act: 'edit-income', arg: i.id })).join('');
+  const b = monthlyBudget(data, thisMonth()), mt = mortgageTotals(data), r = data.rules;
+  // Category totals are what is running this month; a line that starts later still makes its category appear.
+  const cats = {}; for (const l of flowsOf('spend')) { const v = !flowLiveNow(l) ? 0 : l.linked === 'mortgage' ? mt.payment : (+l.amount || 0); cats[l.category || 'Other'] = (cats[l.category || 'Other'] || 0) + v; }
+  const inc = flowsOf('income').map(i => row({ title: esc(i.name), sub: [esc(person(i.owner)), i.growth ? `+${i.growth}% a year` : '', flowWhen(i)].filter(Boolean).join(' · '), value: amt(i.amount), cls: flowLiveNow(i) ? '' : 'dim', act: 'edit-income', arg: i.id })).join('');
   return {
     title: 'Plan', large: true, right: headerRight(),
     body: `<div class="stats">
@@ -653,12 +668,12 @@ function vPlan() {
         row({ title: 'Buffer for the unexpected', value: `${data.bufferPct}%`, act: 'edit-buffer' }) + row({ title: 'Add spending', act: 'add-spend', cls: 'act-row', chev: false }), 'Spending (monthly)')}
       ${group(
         row({ title: 'Mortgage', sub: mt.parts.length > 1 ? `${mt.parts.length} parts` : '', value: amt(mt.payment), vsub: mt.balance != null ? `${short(mt.balance)} owed` : 'balance not set', act: 'push', arg: 'mortgage' }) +
-        row({ title: 'Upcoming payments and receipts', value: String(data.events.filter(e => e.on).length), act: 'push', arg: 'events' }), 'Commitments')}
+        row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Commitments')}
       ${group(
         row({ title: 'Cash floor', value: amt(r.cashFloor), act: 'edit-rules' }) +
-        row({ title: 'ISA allowance (household)', value: amt(r.isaAllowance), act: 'edit-rules' }) +
-        row({ title: `Used in ${r.isaUsedTaxYear}/${String(+r.isaUsedTaxYear + 1).slice(2)}`, value: amt(r.isaUsed), act: 'edit-rules' }) +
-        row({ title: 'Top-ups going to S&S ISAs', value: `${r.sweepToSS || 0}%`, act: 'edit-rules' }), 'Rules', 'Each month, cash above the floor moves into ISAs until the allowance is used. If cash would drop below the floor, the shortfall comes back out of cash ISAs first.')}
+        row({ title: 'ISA allowance', value: `${amt(r.isaPerPerson)} each`, vsub: `${esc(person(r.isaFillOrder[0]))}’s fills first`, act: 'edit-rules' }) +
+        row({ title: `Used in ${r.isaUsedTaxYear}/${String(+r.isaUsedTaxYear + 1).slice(2)}`, sub: r.isaFillOrder.map(p => `${esc(person(p))} ${short(+r.isaUsedBy[p] || 0)}`).join(' · '), value: amt(r.isaFillOrder.reduce((t, p) => t + (+r.isaUsedBy[p] || 0), 0)), act: 'edit-rules' }) +
+        row({ title: 'Top-ups going to S&S ISAs', value: `${r.sweepToSS || 0}%`, act: 'edit-rules' }), 'Rules', 'Each month, cash above the floor moves into ISAs until the allowances are used, one person’s first. If cash would drop below the floor, the shortfall comes back out of cash ISAs first.')}
       ${group(Object.entries(data.scenarios).map(([k, s]) => row({ title: esc(s.name) + (data.scenario === k ? '<span class="tag">Default</span>' : ''), sub: s.growth ? `S&S ${s.ssReturn}% · inflation ${s.inflation}% · pay ${s.payRise}%` : 'Growth off', act: 'push', arg: 'scenario:' + k })).join(''), 'Scenarios')}
       ${group(
         row({ title: 'Names', sub: data.people.map(p => esc(p.name)).join(', '), act: 'edit-people' }) +
@@ -680,22 +695,22 @@ function saveHelp() {
 
 function vSpending(cat) {
   const mPay = mortgageTotals(data).payment;
-  const l = data.spending.filter(x => (x.category || 'Other') === cat);
+  const l = flowsOf('spend').filter(x => (x.category || 'Other') === cat);
   return {
     title: cat, large: true, back: 'Plan',
     body: group(l.map(x => {
-      const mon = x.linked === 'mortgage' ? mPay : (+x.annual || 0) / 12;
-      return row({ title: esc(x.name), sub: x.linked === 'mortgage' ? 'Set on the mortgage page' : x.inflates ? 'Rises with inflation' : 'Fixed', value: amt(mon), vsub: `${short(mon * 12)} a year`, act: x.linked === 'mortgage' ? 'push' : 'edit-spend', arg: x.linked === 'mortgage' ? 'mortgage' : x.id });
+      const mon = x.linked === 'mortgage' ? mPay : (+x.amount || 0);
+      return row({ title: esc(x.name), cls: flowLiveNow(x) ? '' : 'dim', sub: x.linked === 'mortgage' ? 'Set on the mortgage page' : [x.inflates ? 'Rises with inflation' : 'Fixed', flowWhen(x)].filter(Boolean).join(' · '), value: amt(mon), vsub: `${short(mon * 12)} a year`, act: x.linked === 'mortgage' ? 'push' : 'edit-spend', arg: x.linked === 'mortgage' ? 'mortgage' : x.id });
     }).join('') + row({ title: 'Add to ' + esc(cat), act: 'add-spend', arg: cat, cls: 'act-row', chev: false }), 'Monthly'),
   };
 }
 
 function vEvents() {
-  const ev = [...data.events].sort((a, b) => a.date.localeCompare(b.date));
+  const ev = flowsOf('oneoff').sort((a, b) => String(a.start).localeCompare(String(b.start)));
   const net = ev.filter(e => e.on).reduce((s, e) => s + e.amount, 0);
   return {
     title: 'Upcoming', large: true, back: 'Back', right: `<button class="iconbtn" data-act="add-event" aria-label="Add item">${PLUS}</button>`,
-    body: `${group(ev.map(e => row({ title: esc(e.name), sub: fMonth(e.date) + (e.settles ? ` · clears ${esc(acc(e.settles)?.name || '')}` : ''), value: amt(e.amount, { color: true, sign: true }), act: 'edit-event', arg: e.id, right: sw(e.on, 'ev-on', e.id), chev: false })).join('') || row({ title: 'Nothing planned' }),
+    body: `${group(ev.map(e => row({ title: esc(e.name), sub: flowWhen(e) + (e.settles ? ` · clears ${esc(acc(e.settles)?.name || '')}` : ''), value: amt(e.amount, { color: true, sign: true }), act: 'edit-event', arg: e.id, right: sw(e.on, 'ev-on', e.id), chev: false })).join('') || row({ title: 'Nothing planned' }),
       `One-off items<b>net ${money(net, { sign: true })}</b>`, 'Switch items off to see the projection without them. They stay here for later.')}
       ${group(row({ title: 'Add a payment or receipt', act: 'add-event', cls: 'act-row', chev: false }))}`,
   };
@@ -787,6 +802,7 @@ function fieldHTML(f, v) {
   if (f.type === 'toggle') return `<div class="field">${lab}<span class="switch"><input id="${id}" name="${f.key}" type="checkbox" ${v ? 'checked' : ''}><span></span></span></div>`;
   if (f.type === 'select') return `<div class="field">${lab}<select id="${id}" name="${f.key}">${f.options.map(([ov, ol]) => `<option value="${esc(ov)}" ${String(ov) === String(v ?? '') ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select></div>`;
   if (f.type === 'date') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="date" value="${esc(v || '')}"></div>`;
+  if (f.type === 'month') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="month" value="${esc(v ? String(v).slice(0, 7) : '')}" placeholder="YYYY-MM"></div>`;
   const shown = v == null || v === '' ? '' : (f.type === 'money' ? nf2.format(v).replace(/\.00$/, '') : String(v));
   const mode = f.type === 'text' ? 'text' : 'decimal';
   return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="text" inputmode="${mode}" class="${f.type === 'text' ? 'wide' : 'num'}" value="${esc(shown)}" placeholder="${esc(f.ph || (f.optional ? 'Not set' : ''))}" autocomplete="off">${f.unit ? `<span class="unit">${f.unit}</span>` : ''}</div>`;
@@ -797,6 +813,7 @@ function readFields(form, fields) {
     const el = form.elements[f.key]; if (!el) continue;
     if (f.type === 'toggle') out[f.key] = el.checked;
     else if (f.type === 'text' || f.type === 'select' || f.type === 'date') out[f.key] = el.value || (f.optional ? null : '');
+    else if (f.type === 'month') out[f.key] = /^\d{4}-\d{2}/.test(el.value) ? el.value.slice(0, 7) : null;
     else { const n = parseNum(el.value); out[f.key] = n == null ? (f.optional ? null : 0) : n; }
   }
   return out;
@@ -856,12 +873,18 @@ function updateSheet(date) {
 }
 
 const ownerOpts = () => data.people.map(p => [p.id, p.name]);
+const ACCESS_OPTS = Object.entries(TM.ACCESS);
 function accountSheet(id) {
-  const a = id ? acc(id) : { name: '', owner: data.people[0].id, type: 'current', rate: 0, active: true, note: '' };
+  const a = id ? acc(id) : { name: '', owner: data.people[0].id, type: 'current', rate: 0, active: true, note: '', access: 'instant' };
   formSheet({
-    title: id ? 'Edit account' : 'New account', values: a,
+    title: id ? 'Edit account' : 'New account', values: { ...a, access: a.access || 'instant', flexible: a.flexible !== false },
     sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text', ph: 'e.g. Vanguard S&S ISA' }, { key: 'owner', label: 'Belongs to', type: 'select', options: ownerOpts() }, { key: 'type', label: 'Type', type: 'select', options: Object.entries(TYPE_LABEL) }] },
-    { head: 'Projection', fields: [{ key: 'rate', label: 'Interest or return', type: 'percent', unit: '%', hint: 'Cash ISAs and savings use this; S&S ISAs use the scenario return' }, { key: 'active', label: 'Open', type: 'toggle', hint: 'Closed accounts drop out of new updates' }] },
+    { head: 'Projection', fields: [{ key: 'rate', label: 'Interest or return', type: 'percent', unit: '%', hint: 'Cash ISAs, savings and pensions use this; S&S ISAs use the scenario return' }, { key: 'active', label: 'Open', type: 'toggle', hint: 'Closed accounts drop out of new updates' }] },
+    { head: 'How quickly you can use it', foot: 'Used to show what is genuinely available at a given date, such as your remortgage. Not needed for cards or tax owed.', fields: [
+      { key: 'access', label: 'Access', type: 'select', options: ACCESS_OPTS },
+      { key: 'noticeDays', label: 'Notice needed', type: 'number', unit: 'days', optional: true, hint: 'Notice accounts only' },
+      { key: 'maturity', label: 'Matures', type: 'month', optional: true, hint: 'Fixed-term accounts only' },
+      { key: 'flexible', label: 'Flexible ISA', type: 'toggle', hint: 'Cash ISAs only: money taken out can go back in the same tax year' }] },
     { head: 'Notes', fields: [{ key: 'note', label: 'Note', type: 'text', optional: true, ph: 'Optional' }] }],
     extra: id ? destructive('Delete account', 'delete') : '',
     onSave: (v, act) => {
@@ -871,53 +894,71 @@ function accountSheet(id) {
         ui.stacks[ui.tab] = ui.stacks[ui.tab].filter(r => r !== 'acct:' + id); return changed('Account deleted');
       }
       if (!v.name.trim()) { toast('Give the account a name', true); return false; }
-      if (id) Object.assign(a, v); else data.accounts.push({ id: uid('a'), ...v });
+      // keep only the access details that apply to this kind of account
+      if (TM.LIABILITIES.has(v.type)) { v.access = v.noticeDays = v.maturity = null; }
+      if (v.access !== 'notice') v.noticeDays = null;
+      if (v.access !== 'fixed') v.maturity = null;
+      if (v.type !== 'cash_isa') v.flexible = null;
+      const rec = id ? Object.assign(a, v) : { id: uid('a'), ...v };
+      for (const k of ['noticeDays', 'maturity', 'access', 'flexible']) if (rec[k] == null) delete rec[k];
+      if (!id) data.accounts.push(TM.migrate({ accounts: [rec], version: TM.VERSION }).accounts[0]);
       changed(id ? 'Account updated' : 'Account added');
     },
   });
 }
+// Income, spending and one-offs are all "flows". Income and spending are monthly and can start and stop on a month.
+const whenFields = [{ key: 'start', label: 'From', type: 'month', optional: true, hint: 'Leave blank if it’s already running' }, { key: 'end', label: 'Until', type: 'month', optional: true, hint: 'Leave blank if it carries on' }];
+function checkWhen(v) { if (v.start && v.end && v.end < v.start) { toast('“Until” is before “From”', true); return false; } return true; }
 function incomeSheet(id) {
-  const x = id ? data.income.find(i => i.id === id) : { name: '', owner: data.people[0].id, monthly: 0, growth: 0 };
+  const x = id ? flowById(id) : { name: '', owner: data.people[0].id, amount: 0, growth: 0, start: null, end: null };
   formSheet({
     title: id ? 'Edit income' : 'New income', values: x,
-    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'owner', label: 'Whose', type: 'select', options: ownerOpts() }, { key: 'monthly', label: 'Monthly, after tax', type: 'money', unit: '' }, { key: 'growth', label: 'Extra rise each April', type: 'percent', unit: '%', hint: 'On top of the scenario pay rise' }] }],
+    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'owner', label: 'Whose', type: 'select', options: ownerOpts() }, { key: 'amount', label: 'Monthly, after tax', type: 'money', unit: '' }, { key: 'growth', label: 'Extra rise each April', type: 'percent', unit: '%', hint: 'On top of the scenario pay rise' }] },
+    { head: 'When', foot: 'For example, reduced pay during parental leave: add it as its own income with dates, and end the usual pay the month before.', fields: whenFields }],
     extra: id ? destructive('Delete income', 'delete') : '',
     onSave: (v, act) => {
-      if (act === 'delete') { data.income = data.income.filter(i => i.id !== id); return changed('Income removed'); }
-      if (id) Object.assign(x, v); else data.income.push({ id: uid('inc'), ...v }); changed('Income saved');
+      if (act === 'delete') { data.flows = data.flows.filter(f => f.id !== id); return changed('Income removed'); }
+      if (!checkWhen(v)) return false;
+      if (id) Object.assign(x, v); else data.flows.push({ id: uid('inc'), kind: 'income', category: 'Income', inflates: false, bundle: null, on: true, ...v }); changed('Income saved');
     },
   });
 }
 function spendSheet(id, cat) {
-  const x = id ? data.spending.find(s => s.id === id) : { name: '', category: cat || 'Living', annual: 0, inflates: true };
-  const cats = [...new Set([...data.spending.map(s => s.category || 'Other'), 'Home', 'Bills', 'Living', 'Transport', 'Other'])];
+  const x = id ? flowById(id) : { name: '', category: cat || 'Living', amount: 0, inflates: true, start: null, end: null };
+  const cats = [...new Set([...flowsOf('spend').map(s => s.category || 'Other'), 'Home', 'Bills', 'Living', 'Transport', 'Other'])];
+  const monthly = Math.round((+x.amount || 0) * 100) / 100, annual = Math.round((+x.amount || 0) * 12 * 100) / 100;
   formSheet({
-    title: id ? 'Edit spending' : 'New spending', values: { ...x, monthly: Math.round((x.annual || 0) / 12 * 100) / 100 },
+    title: id ? 'Edit spending' : 'New spending', values: { ...x, monthly, annual },
     sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'category', label: 'Category', type: 'select', options: cats.map(c => [c, c]) }] },
     { head: 'Amount — fill in either', foot: 'If you change both, the yearly figure wins.', fields: [{ key: 'monthly', label: 'Per month', type: 'money' }, { key: 'annual', label: 'Per year', type: 'money' }] },
-    { fields: [{ key: 'inflates', label: 'Rises with inflation', type: 'toggle' }] }],
+    { fields: [{ key: 'inflates', label: 'Rises with inflation', type: 'toggle' }] },
+    { head: 'When', foot: 'For costs that start or stop, such as nursery fees from one month to another.', fields: whenFields }],
     extra: id ? destructive('Delete', 'delete') : '',
     onSave: (v, act) => {
-      if (act === 'delete') { data.spending = data.spending.filter(s => s.id !== id); return changed('Removed'); }
-      const annual = Math.abs(v.annual - (x.annual || 0)) > .005 ? v.annual : v.monthly * 12;
-      const rec = { name: v.name, category: v.category, annual: Math.round(annual * 100) / 100, inflates: v.inflates };
-      if (id) Object.assign(x, rec); else data.spending.push({ id: uid('sp'), ...rec }); changed('Spending saved');
+      if (act === 'delete') { data.flows = data.flows.filter(f => f.id !== id); return changed('Removed'); }
+      if (!checkWhen(v)) return false;
+      // keep the exact stored figure unless one of the two boxes was actually changed
+      const amount = Math.abs(v.annual - annual) > .005 ? v.annual / 12 : Math.abs(v.monthly - monthly) > .005 ? v.monthly : (+x.amount || 0);
+      const rec = { name: v.name, category: v.category, amount, inflates: v.inflates, start: v.start, end: v.end };
+      if (id) Object.assign(x, rec); else data.flows.push({ id: uid('sp'), kind: 'spend', owner: null, growth: 0, bundle: null, on: true, ...rec }); changed('Spending saved');
     },
   });
 }
 function eventSheet(id) {
-  const x = id ? data.events.find(e => e.id === id) : { name: '', amount: -1000, date: todayISO().slice(0, 8) + '01', on: true, settles: '' };
+  const x = id ? flowById(id) : { name: '', amount: -1000, start: thisMonth(), on: true, settles: '' };
   const debtOpts = [['', 'Nothing'], ...data.accounts.filter(a => LIAB.has(a.type)).map(a => [a.id, a.name])];
   formSheet({
     title: id ? 'Edit item' : 'New item', values: { ...x, dir: x.amount < 0 ? 'out' : 'in', abs: Math.abs(x.amount), settles: x.settles || '' },
-    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'dir', label: 'Type', type: 'select', options: [['out', 'Payment out'], ['in', 'Money in']] }, { key: 'abs', label: 'Amount', type: 'money' }, { key: 'date', label: 'Month', type: 'date', hint: 'Counted in this month' }] },
+    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'dir', label: 'Type', type: 'select', options: [['out', 'Payment out'], ['in', 'Money in']] }, { key: 'abs', label: 'Amount', type: 'money' }, { key: 'start', label: 'Month', type: 'month', hint: 'Counted in this month' }] },
     { foot: 'If this payment clears a debt, choose it so the debt isn’t counted twice.', fields: [{ key: 'settles', label: 'Clears a debt', type: 'select', options: debtOpts }, { key: 'on', label: 'Include in projection', type: 'toggle' }] }],
     extra: id ? destructive('Delete item', 'delete') : '',
     onSave: (v, act) => {
-      if (act === 'delete') { data.events = data.events.filter(e => e.id !== id); return changed('Item deleted'); }
-      if (!v.date) { toast('Choose a month', true); return false; }
-      const rec = { name: v.name || 'Untitled', amount: (v.dir === 'out' ? -1 : 1) * Math.abs(v.abs), date: v.date.slice(0, 8) + '01', on: v.on, settles: v.settles || undefined };
-      if (id) Object.assign(x, rec); else data.events.push({ id: uid('ev'), ...rec }); changed('Item saved');
+      if (act === 'delete') { data.flows = data.flows.filter(f => f.id !== id); return changed('Item deleted'); }
+      if (!v.start) { toast('Choose a month', true); return false; }
+      const amount = (v.dir === 'out' ? -1 : 1) * Math.abs(v.abs);
+      const rec = { name: v.name || 'Untitled', amount, start: v.start, end: v.start, on: v.on, category: amount < 0 ? 'One-off' : 'Receipt' };
+      if (v.settles) rec.settles = v.settles; else if (x.settles) delete x.settles;
+      if (id) Object.assign(x, rec); else data.flows.push({ id: uid('ev'), kind: 'oneoff', owner: null, inflates: false, growth: 0, bundle: null, ...rec }); changed('Item saved');
     },
   });
 }
@@ -946,12 +987,24 @@ function homeSheet() {
   formSheet({ title: 'Home', values: data.mortgage, sections: [{ foot: 'Used to show your home equity: value less everything owed on the mortgage.', fields: [{ key: 'propertyValue', label: 'Estimated value', type: 'money', optional: true }] }], onSave: v => { data.mortgage.propertyValue = v.propertyValue; changed('Home value saved'); } });
 }
 function rulesSheet() {
-  const r = data.rules;
+  const r = data.rules, who = r.isaFillOrder;
+  const values = { ...r, first: who[0] };
+  for (const p of who) values['used_' + p] = +r.isaUsedBy[p] || 0;
   formSheet({
-    title: 'Rules', values: r,
+    title: 'Rules', values,
     sections: [{ foot: 'The projection keeps at least this much in current accounts.', fields: [{ key: 'cashFloor', label: 'Cash floor', type: 'money' }] },
-    { head: 'ISAs', foot: 'Enter the tax year by its starting year, e.g. 2026 for 2026/27.', fields: [{ key: 'isaAllowance', label: 'Household allowance', type: 'money' }, { key: 'isaUsed', label: 'Already paid in', type: 'money' }, { key: 'isaUsedTaxYear', label: 'In tax year starting', type: 'number' }, { key: 'sweepToSS', label: 'Share of top-ups to S&S', type: 'percent', unit: '%', hint: 'The rest goes to cash ISAs' }] }],
-    onSave: v => { Object.assign(r, v); changed('Rules saved'); },
+    { head: 'ISAs', foot: `Top-ups fill the first person’s allowance, then the next person’s. Enter the tax year by its starting year, e.g. 2026 for 2026/27.`, fields: [
+      { key: 'isaPerPerson', label: 'Allowance each', type: 'money' },
+      ...(who.length > 1 ? [{ key: 'first', label: 'Fill first', type: 'select', options: who.map(p => [p, person(p)]) }] : []),
+      ...who.map(p => ({ key: 'used_' + p, label: `${person(p)} has paid in`, type: 'money' })),
+      { key: 'isaUsedTaxYear', label: 'In tax year starting', type: 'number' },
+      { key: 'sweepToSS', label: 'Share of top-ups to S&S', type: 'percent', unit: '%', hint: 'The rest goes to cash ISAs' }] }],
+    onSave: v => {
+      r.cashFloor = v.cashFloor; r.isaPerPerson = v.isaPerPerson; r.isaUsedTaxYear = v.isaUsedTaxYear; r.sweepToSS = v.sweepToSS;
+      for (const p of who) r.isaUsedBy[p] = v['used_' + p];
+      if (v.first) r.isaFillOrder = [v.first, ...who.filter(p => p !== v.first)];
+      changed('Rules saved');
+    },
   });
 }
 function scenarioSheet(key) {
@@ -1025,7 +1078,7 @@ const actions = {
   'del-snap': d => { if (!confirm(`Delete the update from ${fDate(d)}?`)) return; data.snapshots = data.snapshots.filter(s => s.date !== d); ui.stacks[ui.tab].pop(); changed('Update deleted'); },
 };
 const changes = {
-  'ev-on': (id, on) => { data.events.find(e => e.id === id).on = on; changed(); },
+  'ev-on': (id, on) => { flowById(id).on = on; changed(); },
   'sc-growth': (k, on) => { data.scenarios[k].growth = on; changed(); },
   'sc-default': (k, on) => { if (on) { data.scenario = k; ui.scenario = k; changed(); } else render(); },
 };

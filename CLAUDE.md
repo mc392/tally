@@ -21,16 +21,22 @@ All reading and writing of the finance file goes through `storage.js`; `app.js` 
 ## Tests
 - `node tests/engine.test.js` - projection maths against the spreadsheet's rules, on a made-up household; every figure worked out by hand, month by month (allowance, floor, withdrawal, re-deposit room, April reset).
 - `node tests/mortgage.test.js` - mortgage parts, also worked by hand.
+- `node tests/migration.test.js` - a v1 file migrates and projects **identically** to the frozen pre-v2 engine (`tests/fixtures/engine-v1.js`, never edit it), then dated flows, per-person ISAs, access and pensions.
 - `node tests/storage.test.js` - encryption round trip, wrong passphrase, tampering, IV reuse, conflict rules.
 - `node tests/browser.test.mjs` - the real app in headless Chromium (needs `npm i --no-save playwright`): live save, picking up another device's save, refusing to overwrite it, encryption on, reopening, unlocking on a new device, no CSP violations. Uses a fake file handle, never a real file.
 - `sw.js`'s `CACHE` must be bumped when a shell file is added or renamed.
 
-## Data file shape (version 1)
-`people[]`, `accounts[] {id,name,owner,type,rate,active,note}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
-`income[] {name,owner,monthly,growth}`, `spending[] {name,category,annual,inflates,linked?}`, `bufferPct`,
-`events[] {name,amount,date,on,settles?}`, `mortgage {propertyValue, parts[] {id,name,payment,balance,rate,fixEnd,newRate,termEnd}}`,
-`rules {cashFloor,isaAllowance,isaUsed,isaUsedTaxYear,sweepToSS}`, `scenarios{key:{name,growth,ssReturn,inflation,payRise}}`, `scenario`, `horizonMonths`.
-Account types: ss_isa, cash_isa, savings, current, card, card_0, tax. Cash pool = current + card. ISA pot = ss_isa + cash_isa.
+## Data file shape (version 2, Sep 2026)
+`model.js` owns the shape: `TallyModel.migrate()` upgrades any older file on open (`normalise()` calls it first), and the file on disk only changes when it is next saved. `engine.js` only ever sees the current version. **A change to the shape means bumping `VERSION`, adding a step to `migrate()`, and a test in `tests/migration.test.js`.**
+`people[]`, `accounts[] {id,name,owner,type,rate,active,note,access?,noticeDays?,maturity?,flexible?}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
+`flows[] {id,name,kind:'income'|'spend'|'oneoff',amount,start,end,category,owner,inflates,growth,bundle,on,linked?,settles?}`, `bufferPct`,
+`mortgage {propertyValue, parts[] {id,name,payment,balance,rate,fixEnd,newRate,termEnd}}`,
+`rules {cashFloor,isaPerPerson,isaUsedBy{personId:£},isaFillOrder[],isaUsedTaxYear,sweepToSS}`, `scenarios{key:{name,growth,ssReturn,inflation,payRise}}`, `scenario`, `horizonMonths`.
+- **Flows** replaced v1's `income[]`, `spending[]` and `events[]`. Income and spend amounts are **monthly and positive**; a one-off is the total, **signed** (− = money out) and happens in its `start` month. `start`/`end` are `'YYYY-MM'` or null; `TallyModel.flowActive(f, k)` is the only test of whether a flow counts in a month. `monthlyBudget(data, 'YYYY-MM')` is the regular budget for one month (one-offs excluded). `linked:'mortgage'` on a spend flow is how the mortgage enters spending. `bundle` is reserved for life events (Phase 1.5).
+- **ISA allowance is per person** (`isaPerPerson`, default £20,000), filled in `isaFillOrder` - the first person's allowance is used up before the next person's (decided with Matt). The Joint person (`id:'J'`) never holds an ISA. Migration splits the old household figure evenly and puts what was already used against people in fill order, which keeps every projected figure identical. Re-deposit room is still tracked for the household, and every cash ISA is treated as flexible in the projection; `accounts[].flexible` is recorded for Phase 1 readiness but not yet used by the engine.
+- **Access** (`instant|notice|fixed|invested|locked`, labels in `TallyModel.ACCESS`): defaulted by type on migration; liabilities have none. Recorded now, used by the Phase 1 readiness ladder.
+- **Pension** is an account type (pool `other`, grows at its own rate like savings, access `locked`).
+Account types: ss_isa, cash_isa, savings, current, pension, card, card_0, tax. Cash pool = current + card. ISA pot = ss_isa + cash_isa.
 
 ## Mortgage parts (Sep 2026)
 A mortgage is a list of **parts** (UK sub-accounts: e.g. the original loan plus a further advance), each with its own payment, balance, rate, fix and term; `propertyValue` stays on the mortgage because there is one home.

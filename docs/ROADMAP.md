@@ -33,6 +33,8 @@ This is the build plan for Claude Code. Work through it phase by phase. Each fea
 
 ## Phase 0: Foundations
 
+> **Status: done (28 Sep 2026).** Data file v2 in `model.js`; a v1 file projects identically (13,920 figures checked against the frozen v1 engine). Also added: `pension` account type, a `flexible` flag on cash ISAs. Not yet: the engine still treats every cash ISA as flexible.
+
 Phase 1 needs a richer data model. Doing this first avoids rewriting the engine twice.
 
 ### 0.1 Data file version 2 with migration

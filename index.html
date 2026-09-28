@@ -59,6 +59,7 @@ input,select{font:inherit; letter-spacing:inherit; color:inherit}
 .back svg{width:12px; height:20px}
 .iconbtn{width:36px; height:36px; display:grid; place-items:center; color:var(--accent); border-radius:18px}
 .iconbtn svg{width:22px; height:22px}
+.row.dim .ttl, .row.dim .val{color:var(--label2)}
 .pill{font-size:13px; font-weight:600; padding:5px 10px; border-radius:14px; background:var(--fill); color:var(--label2); white-space:nowrap}
 .pill.warn{background:rgba(255,149,0,.16); color:var(--orange)}
 .pill.ok{color:var(--green); background:rgba(52,199,89,.14)}
@@ -226,6 +227,7 @@ textarea{width:100%; min-height:160px; border-radius:12px; border:0; padding:12p
 </div></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="fileIn" accept="application/json,.json,.tally" hidden>
+<script src="model.js"></script>
 <script src="engine.js"></script>
 <script src="storage.js"></script>
 <script src="app.js"></script>

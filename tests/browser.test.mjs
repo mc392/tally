@@ -160,6 +160,41 @@ try {
   await page.waitForFunction(() => data.mortgage.parts.length === 1);
   ok((await page.textContent('#main')).includes('Home equity') && !(await page.textContent('#main')).includes('2 parts'), 'deleting a part goes back to the single mortgage');
 
+  console.log('Data file version 2');
+  ok(await page.evaluate(() => data.version === 2 && !data.income && data.flows.length === 3), 'the v1 file was upgraded: income, spending and one-offs are now flows');
+  ok(await page.evaluate(() => data.accounts.find(a => a.id === 'isa').access === 'invested' && data.accounts.find(a => a.id === 'cur').access === 'instant'), 'accounts were given an access type');
+  await page.click('#tabbar [data-arg="plan"]');
+  await page.click('[data-act="add-spend"]');
+  await page.waitForSelector('.sheet-wrap.open #f_start');
+  await page.fill('.sheet-wrap.open #f_name', 'Nursery');
+  await page.fill('.sheet-wrap.open #f_monthly', '800');
+  await page.fill('.sheet-wrap.open #f_start', '2027-01'); await page.fill('.sheet-wrap.open #f_end', '2027-06');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.flows.some(f => f.name === 'Nursery'));
+  const nursery = await page.evaluate(() => data.flows.find(f => f.name === 'Nursery'));
+  ok(nursery.kind === 'spend' && nursery.amount === 800 && nursery.start === '2027-01' && nursery.end === '2027-06', 'spending with From and Until saved as a dated flow');
+  // the sample's mortgage fix ends Jun 2027, which moves spending by itself, so leave the mortgage out
+  const spendDiff = await page.evaluate(() => { const r = project(data, 'cautious', 36).rows, at = d => { const x = r.find(y => y.date === d); return x.spend - x.mortgagePay; }; return [at('2027-03-01') - at('2027-08-01'), at('2026-12-01') - at('2027-08-01')]; });
+  ok(Math.abs(spendDiff[0] - 800) < 0.01 && Math.abs(spendDiff[1]) < 0.01, 'the projection charges it only from Jan to Jun 2027');
+  await page.click('#main [data-act="edit-rules"]');
+  await page.waitForSelector('.sheet-wrap.open #f_first');
+  await page.selectOption('.sheet-wrap.open #f_first', 'C');
+  await page.fill('.sheet-wrap.open #f_used_C', '5000');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.rules.isaFillOrder[0] === 'C');
+  ok(await page.evaluate(() => data.rules.isaUsedBy.C === 5000 && data.rules.isaFillOrder.join() === 'C,M'), 'ISA rules: Partner fills first, with £5,000 already paid in');
+  ok((await page.textContent('#main')).includes('Partner’s fills first'), 'Plan shows whose allowance fills first');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+  await page.evaluate(() => actions['edit-account']('cur'));
+  await page.waitForSelector('.sheet-wrap.open #f_access');
+  await page.selectOption('.sheet-wrap.open #f_access', 'notice'); await page.fill('.sheet-wrap.open #f_noticeDays', '35');
+  await page.fill('.sheet-wrap.open #f_maturity', '2028-01'); // not a fixed account, so this must be dropped
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.accounts.find(a => a.id === 'cur').access === 'notice');
+  ok(await page.evaluate(() => { const a = data.accounts.find(x => x.id === 'cur'); return a.noticeDays === 35 && !('maturity' in a) && !('flexible' in a); }), 'account access saved, with only the details that apply to it');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+  ok(await page.evaluate(async () => { const f = JSON.parse(window.__disk); const d = await TS.unseal(f, seal); return d.version === 2 && Array.isArray(d.flows) && !('income' in d) && !('events' in d); }), 'the saved file is version 2');
+
   ok((await page.evaluate(() => window.__csp)).length === 0 && (await page2.evaluate(() => window.__csp)).length === 0, 'nothing blocked by the security policy');
   ok(errors.length === 0, 'no script errors' + (errors.length ? ': ' + errors.join('; ') : ''));
   console.log(`All ${passed} browser checks pass ✓`);
