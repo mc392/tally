@@ -19,6 +19,25 @@ function annuity(bal, ratePct, n) {
   return r === 0 ? bal / n : bal * r / (1 - Math.pow(1 + r, -n));
 }
 
+// A mortgage can be split into parts (UK "sub-accounts"), each with its own balance, rate, fix and term.
+// Files written before parts existed hold one flat mortgage; that reads as a single part.
+function mortgageParts(data) {
+  const m = data.mortgage || {};
+  if (Array.isArray(m.parts)) return m.parts;
+  return [{ id: 'main', payment: m.payment, balance: m.balance, rate: m.rate, fixEnd: m.fixEnd, newRate: m.newRate, termEnd: m.termEnd }];
+}
+const isSet = v => v != null && v !== '';
+function mortgageTotals(data) {
+  const parts = mortgageParts(data);
+  const withBal = parts.filter(p => isSet(p.balance));
+  return {
+    parts,
+    payment: parts.reduce((s, p) => s + (+p.payment || 0), 0),
+    balance: withBal.length ? withBal.reduce((s, p) => s + +p.balance, 0) : null, // null = no balance entered anywhere
+    allBalances: withBal.length === parts.length,
+  };
+}
+
 function latestSnapshot(data) {
   const s = [...data.snapshots].sort((a, b) => a.date.localeCompare(b.date));
   return s[s.length - 1] || null;
@@ -43,7 +62,7 @@ function snapshotTotals(data, snap) {
 
 function monthlyBudget(data) {
   const income = data.income.reduce((s, i) => s + (+i.monthly || 0), 0);
-  const spend = data.spending.reduce((s, l) => s + (l.linked === 'mortgage' ? (+data.mortgage.payment || 0) * 12 : (+l.annual || 0)), 0) / 12;
+  const spend = data.spending.reduce((s, l) => s + (l.linked === 'mortgage' ? mortgageTotals(data).payment * 12 : (+l.annual || 0)), 0) / 12;
   const buffer = spend * (+data.bufferPct || 0) / 100;
   return { income, spend, buffer, out: spend + buffer, surplus: income - spend - buffer };
 }
@@ -72,11 +91,13 @@ function project(data, scenarioKey, months) {
   const cashIsaRate = isaCash ? cashIsaRateW / isaCash : 3;
   const ssShare = Math.min(100, Math.max(0, +r.sweepToSS || 0)) / 100;
 
-  const m = data.mortgage || {};
-  let mBal = m.balance != null && m.balance !== '' ? +m.balance : null;
-  let mPay = +m.payment || 0;
-  const fixEndK = m.fixEnd ? ymKey(ym(m.fixEnd).y, ym(m.fixEnd).m) : null;
-  const termEndK = m.termEnd ? ymKey(ym(m.termEnd).y, ym(m.termEnd).m) : null;
+  // Each part runs on its own: its own balance, rate, and a payment recalculated when its fix ends.
+  const mk = d => d ? ymKey(ym(d).y, ym(d).m) : null;
+  const parts = mortgageParts(data).map(p => ({
+    id: p.id, name: p.name, bal: isSet(p.balance) ? +p.balance : null, pay: +p.payment || 0,
+    rate: isSet(p.rate) ? +p.rate : null, newRate: isSet(p.newRate) ? +p.newRate : null, fixEndK: mk(p.fixEnd), termEndK: mk(p.termEnd),
+  }));
+  const anyBal = parts.some(p => p.bal != null);
 
   let ty = taxYearOf(k0);
   let fresh = Math.max(0, (+r.isaAllowance || 0) - (ty === +r.isaUsedTaxYear ? (+r.isaUsed || 0) : 0));
@@ -92,17 +113,21 @@ function project(data, scenarioKey, months) {
     const payF = Math.pow(1 + (sc.payRise || 0) / 100, yearsIn);
     const infF = Math.pow(1 + (sc.inflation || 0) / 100, yearsIn);
 
-    // mortgage
-    let mortgageInterest = 0;
-    if (mBal != null && m.rate != null && m.rate !== '') {
-      if (fixEndK != null && k === fixEndK && m.newRate != null && m.newRate !== '' && termEndK != null) {
-        mPay = annuity(mBal, +m.newRate, termEndK - k);
+    // mortgage: a part with a balance and rate runs down month by month; one without is a flat payment.
+    // A part that is paid off stops costing anything, so its payment leaves the spending too.
+    const mParts = parts.map(p => {
+      let interest = 0, paid = p.pay;
+      if (p.bal != null && p.rate != null) {
+        if (p.fixEndK != null && k === p.fixEndK && p.newRate != null && p.termEndK != null) p.pay = annuity(p.bal, p.newRate, p.termEndK - k);
+        const rate = p.fixEndK != null && k >= p.fixEndK && p.newRate != null ? p.newRate : p.rate;
+        interest = p.bal * rate / 100 / 12;
+        paid = Math.min(p.pay, p.bal + interest);
+        p.bal = Math.max(0, p.bal + interest - paid);
       }
-      const rate = (fixEndK != null && k >= fixEndK && m.newRate != null && m.newRate !== '') ? +m.newRate : +m.rate;
-      mortgageInterest = mBal * rate / 100 / 12;
-      const pay = Math.min(mPay, mBal + mortgageInterest);
-      mBal = Math.max(0, mBal + mortgageInterest - pay);
-    }
+      return { id: p.id, name: p.name, pay: paid, interest, bal: p.bal };
+    });
+    const mPay = mParts.reduce((s, p) => s + p.pay, 0), mortgageInterest = mParts.reduce((s, p) => s + p.interest, 0);
+    const mBal = anyBal ? mParts.reduce((s, p) => s + (p.bal || 0), 0) : null;
 
     const income = data.income.reduce((s, x) => s + (+x.monthly || 0) * payF * Math.pow(1 + (+x.growth || 0) / 100, yearsIn), 0);
     let spend = 0;
@@ -151,11 +176,11 @@ function project(data, scenarioKey, months) {
       opening, before, topUp, withdraw, shortfall, closing: cash,
       freshStart, replStart, cap, freshEnd: fresh, replEnd: repl, taxYear: tyNow,
       isaSS, isaCash, isa: isaSS + isaCash, growth, other: otherTotal,
-      mortgageBal: mBal, mortgagePay: mPay, mortgageInterest,
+      mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgageParts: mParts,
       net: cash + isaSS + isaCash + otherTotal,
     });
   }
   return { start: keyToDate(k0), snapDate: snap.date, rows, cashIsaRate };
 }
 
-if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, GROUPS };
+if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, mortgageParts, mortgageTotals, GROUPS };
