@@ -82,8 +82,11 @@ export function curveSheet(rows) {
     if (vals.some(v => v != null)) days.push({ date, vals });
   }
   days.sort((a, b) => a.date.localeCompare(b.date));
-  const unit = String(head[0] || '').toLowerCase().includes('month') ? 'months' : 'years';
-  return { unit, maturities: cols.map(c => c[1]), days };
+  // Months or years? Judged from the numbers, not the label: the short end runs to 5 years, so maturities that all sit
+  // at or below 5 are years (0.083, 0.167 … 5); ones running to 60 are months. A label only breaks a tie.
+  const mats = cols.map(c => c[1]), label = String(head[0] || '').toLowerCase();
+  const unit = Math.max(...mats) <= 5 + 1e-6 ? 'years' : label.includes('month') && Math.max(...mats) <= 61 ? 'months' : 'years';
+  return { unit, label: String(head[0] ?? ''), headerRow: h + 1, maturities: mats, days };
 }
 // The rates for one date, by maturity in months (short end) or years (long).
 function onDate(sheet, date) { const d = sheet.days.find(x => x.date === date); return d ? d.vals : null; }
@@ -95,9 +98,11 @@ export function oisCurve(sheets) {
   const fL = findSheet(sheets, /fwd curve|forward curve/i), sL = findSheet(sheets, /spot curve/i);
   if (!fS || !sS || !fL || !sL) throw new Error(`OIS workbook sheets not found (have: ${Object.keys(sheets).join(', ')})`);
   const [FS, SS, FL, SL] = [fS, sS, fL, sL].map(curveSheet);
+  const describe = () => Object.entries({ 'short-end forward': FS, 'short-end spot': SS, 'long forward': FL, 'long spot': SL }).map(([n, S]) =>
+    `${n}: header row ${S.headerRow} labelled "${S.label}", read as ${S.unit}, ${S.maturities.length} maturities ${S.maturities.slice(0, 3).join(', ')} … ${S.maturities.slice(-2).join(', ')}; ${S.days.length} dated rows, last ${S.days.at(-1)?.date}`);
   const asOf = FS.days.at(-1)?.date; if (!asOf) throw new Error('no dated rows on the short-end sheet');
   const short = (S) => {
-    const vals = onDate(S, asOf) || [], months = S.unit === 'months' ? S.maturities : S.maturities.map(y => Math.round(y * 12));
+    const vals = onDate(S, asOf) || [], months = S.maturities.map(m => Math.round(S.unit === 'months' ? m : m * 12));
     return Array.from({ length: 60 }, (_, i) => { const j = months.indexOf(i + 1); return j >= 0 ? vals[j] ?? null : null; });
   };
   const longOf = (S) => {
@@ -107,6 +112,7 @@ export function oisCurve(sheets) {
   };
   const lf = longOf(FL), ls = longOf(SL), tenors = lf.map(x => x[0]).filter(t => ls.some(y => y[0] === t));
   return {
+    layout: describe(),
     asOf, shortEnd: { stepMonths: 1, forward: short(FS), spot: short(SS) },
     long: { tenorsYears: tenors, forward: tenors.map(t => lf.find(x => x[0] === t)[1]), spot: tenors.map(t => ls.find(x => x[0] === t)[1]) },
   };

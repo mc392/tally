@@ -37,6 +37,7 @@ export function assemble({ sheets, daily = {}, monthlySeries = {}, series, fetch
     if (est) suggested = { passThrough: Math.round(est.passThrough * 100) / 100, lagMonths: est.lagMonths, r2: Math.round(est.r2 * 100) / 100, months: est.n, series: inst };
   }
   return {
+    layout: c.layout,
     source: 'Bank of England OIS (nominal) curve', attribution: 'Source: Bank of England', asOf: c.asOf, compounding: 'continuous',
     shortEnd: c.shortEnd, long: c.long,
     anchors: { bankRate: br ? br.rate : null, sonia: so ? so.rate : null, asOf: (so || br || {}).date || null },
@@ -78,6 +79,9 @@ async function main() {
   const curve = assemble({ sheets, daily, monthlySeries, series });
   const latestPath = join(ROOT, 'rates/curve-latest.json');
   const prev = existsSync(latestPath) ? JSON.parse(readFileSync(latestPath, 'utf8')) : null;
+  // what the workbook looked like: enough to see why, if the Bank's layout is not what this reader expects
+  const layout = curve.layout; delete curve.layout;
+  console.log('Workbook read as:\n - ' + layout.join('\n - '));
   const out = publish(curve, prev);
   for (const w of warn) console.warn('warning:', w);
   if (!out.ok) { console.error(`Curve dated ${curve.asOf} rejected; keeping ${prev ? prev.asOf : 'nothing'}:\n - ` + out.errors.join('\n - ')); process.exit(1); }
