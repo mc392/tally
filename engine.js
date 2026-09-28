@@ -1,6 +1,7 @@
 // ---------- Tally projection engine (pure functions, no UI) ----------
 // Works on the current data file version only (see model.js); older files are migrated before they get here.
 const EM = typeof TallyModel !== 'undefined' ? TallyModel : require('./model.js');
+const EC = typeof TallyCurves !== 'undefined' ? TallyCurves : require('./curves.js');
 const LIAB_TYPES = new Set(['card', 'card_0', 'tax']);
 // A flow's amount in month k. A month set by hand in the cash-flow calendar (flow.overrides['YYYY-MM'])
 // is the actual figure for that month, so the scenario's inflation or pay rise is NOT applied on top of it.
@@ -186,7 +187,34 @@ function project(data, scenarioKey, months, opts = {}) {
     else other[a.id] = v;
   }
   const matK = a => a.access === 'fixed' && a.maturity ? EM.monthKey(a.maturity) : null;
-  const cashIsaRateAt = date => { const w = cashIsaW.reduce((s, [, v]) => s + v, 0); return w ? cashIsaW.reduce((s, [a, v]) => s + v * EM.rateOn(a, date), 0) / w : 3; };
+  // Market rates (curves.js): an account or mortgage part with a rateModel follows the scenario's rate path;
+  // everything else keeps its own entered rates, exactly as before. RL.active is false for "flat" and when no
+  // curve is to hand, and then nothing below changes.
+  const RL = EC.forScenario(data, sc);
+  const paths = {}, partPaths = {};
+  if (RL.active) {
+    for (const a of accs) if (a.rateModel && INTEREST_TYPES.has(a.type)) {
+      // dated changes still to come are facts: the model takes over from the last of them
+      const d0 = keyToDate(k0), last = (a.rates || []).map(x => x.from).filter(Boolean).sort().at(-1);
+      paths[a.id] = EC.path({
+        ...a.rateModel, category: 'savings', known: i => EM.rateOn(a, keyToDate(k0 + i)),
+        knownUntil: last && last > d0 ? EM.monthKey(EM.month(last)) - k0 + (last.slice(8, 10) > '01' ? 1 : 0) : 0,
+        fixEndI: a.rateModel.kind === 'fixed' && a.maturity ? EM.monthKey(a.maturity) - k0 : null,
+      }, RL, k0, months);
+    }
+    for (const p of mortgageParts(data)) if (p.rateModel && isSet(p.rate)) {
+      partPaths[p.id] = EC.path({
+        ...p.rateModel, category: 'mortgage', known: () => +p.rate, afterRate: isSet(p.newRate) ? +p.newRate : null, extra: +sc.rateShift || 0,
+        fixEndI: p.rateModel.kind === 'fixed' && p.fixEnd ? EM.monthKey(EM.month(p.fixEnd)) - k0 : null,
+      }, RL, k0, months);
+    }
+  }
+  const rateAt = (a, k, date) => (paths[a.id] ? paths[a.id].rates[k - k0] : EM.rateOn(a, date));
+  // Money in a fixed-term account is free from its maturity month; with a fixed rate model, whenever it is not in a fix
+  // (a refix locks it up again).
+  const fixPath = a => (paths[a.id] && a.rateModel.kind === 'fixed' ? paths[a.id] : null);
+  const matured = (a, k) => (fixPath(a) ? a.access === 'fixed' && !fixPath(a).fixed[k - k0] : (m => m != null && m <= k)(matK(a)));
+  const cashIsaRateAt = (date, k = k0) => { const w = cashIsaW.reduce((s, [, v]) => s + v, 0); return w ? cashIsaW.reduce((s, [a, v]) => s + v * rateAt(a, k, date), 0) / w : 3; };
   const cashIsaRate = cashIsaRateAt(snap.date);
   const ssShare = Math.min(100, Math.max(0, +r.sweepToSS || 0)) / 100;
 
@@ -195,6 +223,7 @@ function project(data, scenarioKey, months, opts = {}) {
   const parts = mortgageParts(data).map(p => ({
     id: p.id, name: p.name, bal: isSet(p.balance) ? +p.balance : null, pay: +p.payment || 0,
     rate: isSet(p.rate) ? +p.rate : null, newRate: isSet(p.newRate) ? +p.newRate : null, fixEndK: mk(p.fixEnd), termEndK: mk(p.termEnd),
+    path: partPaths[p.id] || null, last: partPaths[p.id] ? partPaths[p.id].rates[0] : null,
   }));
   const anyBal = parts.some(p => p.bal != null);
   // The scenario's chosen remortgage option (1.6), applied to its part from the part's fix end.
@@ -249,7 +278,7 @@ function project(data, scenarioKey, months, opts = {}) {
   // notice cash ISAs, and anything fixed that has matured.
   const accessibleNow = (k, cashNow) => {
     let t = cashNow + isaCash;
-    for (const id in other) { const a = byId[id]; if (LIAB_TYPES.has(a.type)) continue; const m = matK(a); if (a.access === 'instant' || a.access === 'notice' || (m != null && m <= k)) t += other[id]; }
+    for (const id in other) { const a = byId[id]; if (LIAB_TYPES.has(a.type)) continue; if (a.access === 'instant' || a.access === 'notice' || matured(a, k)) t += other[id]; }
     for (const id in heldIsa) if (byId[id].access === 'notice') t += heldIsa[id];
     return t;
   };
@@ -258,8 +287,17 @@ function project(data, scenarioKey, months, opts = {}) {
   for (let i = 0; i < months; i++) {
     const k = k0 + i;
     const date = keyToDate(k);
-    // a fixed-term cash ISA that matures this month becomes ordinary instant-access cash ISA money
-    for (const id in heldIsa) { const m = matK(byId[id]); if (m != null && m <= k) { isaCash += heldIsa[id]; delete heldIsa[id]; } }
+    // a fixed-term cash ISA that matures this month becomes ordinary instant-access cash ISA money - unless, on
+    // market rates, it rolls into a new fix. On a variable or set rate after it, it joins the pool at that rate.
+    for (const id in heldIsa) {
+      const a = byId[id], P = paths[id];
+      if (!matured(a, k)) continue;
+      if (P && P.closeAt == null) cashIsaW.push([a, heldIsa[id]]); // it joins the pool at its own (market) rate
+      isaCash += heldIsa[id]; delete heldIsa[id];
+    }
+    // a savings account whose rollover is "close" is paid into cash when its fix ends
+    let closed = 0;
+    for (const id in other) if (paths[id] && paths[id].closeAt === i) { closed += other[id]; other[id] = 0; }
     const tyNow = taxYearOf(k);
     if (tyNow !== ty) { ty = tyNow; for (const p of who) freshBy[p] = per; fresh = freshTotal(); repl = 0; }
     const yearsIn = tyNow - taxYearOf(k0);             // annual steps each April
@@ -283,9 +321,19 @@ function project(data, scenarioKey, months, opts = {}) {
         p.pay = annuity(p.bal, p.rate, p.termEndK - k);
         p.deal = { from: k, regular: +opt.regular || 0, capPct: capPctOf(opt), capLeft: 0 };
       }
+      let rate = null, repriced = false;
+      const onPath = p.path && !(p === optPart && k >= optK) && p.bal != null;
+      if (onPath) {
+        // market rates: this month's rate from the path; the payment is worked out again whenever it changes
+        rate = p.path.rates[i];
+        if (Math.abs(rate - p.last) > 1e-12) { repriced = true; if (p.termEndK != null) p.pay = annuity(p.bal, rate, p.termEndK - k); }
+        p.last = rate;
+      }
       if (p.bal != null && p.rate != null) {
-        if (p.fixEndK != null && k === p.fixEndK && p.newRate != null && p.termEndK != null) p.pay = annuity(p.bal, p.newRate, p.termEndK - k);
-        const rate = p.fixEndK != null && k >= p.fixEndK && p.newRate != null ? p.newRate : p.rate;
+        if (rate == null) {
+          if (p.fixEndK != null && k === p.fixEndK && p.newRate != null && p.termEndK != null) p.pay = annuity(p.bal, p.newRate, p.termEndK - k);
+          rate = p.fixEndK != null && k >= p.fixEndK && p.newRate != null ? p.newRate : p.rate;
+        }
         interest = p.bal * rate / 100 / 12;
         paid = Math.min(p.pay, p.bal + interest);
         p.bal = Math.max(0, p.bal + interest - paid);
@@ -294,7 +342,7 @@ function project(data, scenarioKey, months, opts = {}) {
           over = Math.min(p.deal.regular, p.deal.capLeft, p.bal); p.bal -= over; p.deal.capLeft -= over; dealCash += over;
         }
       }
-      return { id: p.id, name: p.name, pay: paid, interest, bal: p.bal, over };
+      return { id: p.id, name: p.name, pay: paid, interest, bal: p.bal, over, rate, repriced, why: onPath ? p.path.why[i] : null };
     });
     const mPay = mParts.reduce((s, p) => s + p.pay, 0), mortgageInterest = mParts.reduce((s, p) => s + p.interest, 0);
     const mBal = anyBal ? mParts.reduce((s, p) => s + (p.bal || 0), 0) : null;
@@ -324,7 +372,7 @@ function project(data, scenarioKey, months, opts = {}) {
     for (const e of evs) if (e.settles && other[e.settles] != null) other[e.settles] = 0;
 
     const opening = cash;
-    const before = opening + surplus + payments + receipts - dealCash;
+    const before = opening + surplus + payments + receipts - dealCash + closed;
     const freshStart = fresh, replStart = repl, cap = fresh + repl;
     let topUp = 0, withdraw = 0, shortfall = 0;
     const floor = +r.cashFloor || 0;
@@ -347,21 +395,26 @@ function project(data, scenarioKey, months, opts = {}) {
     cash = before - topUp + withdraw;
 
     let growth = 0;
+    const poolRate = cashIsaRateAt(date, k), rates = {}, interestBy = {};
     if (opts.ssReturns) { const g = isaSS * opts.ssReturns[i]; isaSS += g; growth += g; }
     if (sc.growth) {
       const gSS = opts.ssReturns ? 0 : isaSS * (sc.ssReturn || 0) / 100 / 12;
-      const gC = isaCash * cashIsaRateAt(date) / 100 / 12;
-      isaSS += gSS; isaCash += gC; growth += gSS + gC;
-      for (const id in heldIsa) { const g = heldIsa[id] * EM.rateOn(byId[id], date) / 100 / 12; heldIsa[id] += g; growth += g; }
+      const gC = isaCash * poolRate / 100 / 12;
+      isaSS += gSS; isaCash += gC; growth += gSS + gC; interestBy.cashIsaPool = gC;
+      for (const id in heldIsa) { const r = rateAt(byId[id], k, date), g = heldIsa[id] * r / 100 / 12; heldIsa[id] += g; growth += g; interestBy[id] = g; }
       for (const a of accs) if (other[a.id] != null && (a.type === 'savings' || a.type === 'pension')) {
-        const g = other[a.id] * EM.rateOn(a, date) / 100 / 12; other[a.id] += g; growth += g;
+        const g = other[a.id] * rateAt(a, k, date) / 100 / 12; other[a.id] += g; growth += g; interestBy[a.id] = g;
       }
     }
+    for (const a of accs) if (INTEREST_TYPES.has(a.type) || a.type === 'pension') rates[a.id] = rateAt(a, k, date);
+    // what the market-rates layer did this month: each modelled item's workings, and any that repriced
+    const market = {};
+    for (const id in paths) market[id] = { why: paths[id].why[i], repriced: paths[id].reprices.some(x => x.i === i) };
     const otherTotal = Object.values(other).reduce((s, v) => s + v, 0);
     const heldTotal = Object.values(heldIsa).reduce((s, v) => s + v, 0);
     // Every pound at month end, by how quickly it could be used. Adds up to net worth.
     const byAccess = { instant: cash + isaCash, notice: 0, invested: isaSS, fixed: 0, locked: 0, debts: 0 };
-    const place = (a, v) => { if (LIAB_TYPES.has(a.type)) { byAccess.debts += v; return; } const m = matK(a); const c = m != null && m <= k ? 'instant' : (a.access || 'instant'); byAccess[c] = (byAccess[c] || 0) + v; };
+    const place = (a, v) => { if (LIAB_TYPES.has(a.type)) { byAccess.debts += v; return; } const c = matured(a, k) ? 'instant' : (a.access || 'instant'); byAccess[c] = (byAccess[c] || 0) + v; };
     for (const id in other) place(byId[id], other[id]);
     for (const id in heldIsa) place(byId[id], heldIsa[id]);
     const earmarkBy = earmarkOf(k);
@@ -373,10 +426,12 @@ function project(data, scenarioKey, months, opts = {}) {
       byAccess, earmark: sumBy(earmarkBy), earmarkBy,
       accounts: { ...other, ...heldIsa }, // month-end balance of each account tracked on its own (savings, pensions, debts, fixed/notice cash ISAs)
       mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgageParts: mParts, dealCash,
+      rates, cashIsaRate: poolRate, interest: interestBy, market, closed,
       net: cash + isaSS + isaCash + heldTotal + otherTotal,
     });
   }
-  return { start: keyToDate(k0), snapDate: snap.date, rows, cashIsaRate, fixEndK: F };
+  return { start: keyToDate(k0), snapDate: snap.date, rows, cashIsaRate, fixEndK: F,
+    rateLayer: { active: RL.active, kind: RL.kind, label: RL.label, reason: RL.reason || null, asOf: RL.asOf || null, wanted: RL.wanted || null, modelled: Object.keys(paths).length + Object.keys(partPaths).length }, paths, partPaths };
 }
 
 // ---------- remortgage readiness (Phase 1.1) ----------
@@ -457,9 +512,11 @@ function compareOptions(data, sk, windowMonths = 60, today) {
   const F = EM.monthKey(EM.month(R.fixEnd)), months = F - k0 + windowMonths;
   const pi = mortgageParts(data).findIndex(p => p.id === R.part.id);
   const opts = [{ id: null, name: 'Do nothing', note: 'Move to the rate after your fix' }, ...(data.remortgageOptions || []).filter(o => o.partId === R.part.id)];
+  let cashRateWin = null; // the cash ISA rate averaged over the window (on market rates it moves; flat, it is today's)
   const results = opts.map(o => {
     const rows = projectAs(data, sk, { option: o.id }, months).rows;
     const win = rows.filter(r => r.k >= F && r.k < F + windowMonths), last = win.at(-1), part = r => r.mortgageParts[pi];
+    if (!o.id) cashRateWin = win.reduce((s, r) => s + r.cashIsaRate, 0) / win.length;
     const interest = win.reduce((s, r) => s + part(r).interest, 0), overpaid = win.reduce((s, r) => s + part(r).over, 0);
     const fee = o.id ? +o.fee || 0 : 0, lowest = win.reduce((b, r) => (r.closing < b.closing ? r : b), win[0]);
     return {
@@ -472,7 +529,15 @@ function compareOptions(data, sk, windowMonths = 60, today) {
   const cashIsaRate = project(data, sk, 1).cashIsaRate;
   // months left on the part's term at the switch: what an option with no term of its own runs over
   const termLeft = R.part.termEnd ? Math.max(1, EM.monthKey(EM.month(R.part.termEnd)) - F) : 300;
-  return { R, part: R.part, partIndex: pi, termLeft, switchDate: R.fixEnd, windowMonths, endDate: keyToDate(F + windowMonths - 1), results, balAtSwitch, cashIsaRate };
+  return { R, part: R.part, partIndex: pi, termLeft, switchDate: R.fixEnd, windowMonths, endDate: keyToDate(F + windowMonths - 1), results, balAtSwitch, cashIsaRate, cashRateWin,
+    market: [24, 60].map(m => marketFix(data, sk, R.fixEnd, m)).filter(Boolean) };
+}
+// A new fix priced from the market (4.5): the forward rate for that period from the switch, as AER, plus the mortgage
+// margin (today's quoted rate for that length of fix less today's market rate). null when the scenario is not on market rates.
+function marketFix(data, sk, switchDate, months) {
+  const L = EC.forScenario(data, data.scenarios[sk || data.scenario]); if (!L.active) return null;
+  const t = Math.max(0, EC.timeOf(L.asOf, EM.monthKey(EM.month(switchDate)), 0)), fcc = EC.termRateCC(L, t, months / 12), m = EC.marginFor(L, 'mortgage', months);
+  return { months, fwdCC: fcc, fwdAER: EC.aer(fcc), margin: m.margin, marginSource: m.source, rate: EC.aer(fcc) + m.margin, label: L.label, asOf: L.asOf };
 }
 // Payment and cost of one option at its rate and at ±0.5% and ±1% (pure amortisation, no household).
 function rateGrid(o, bal, months = 60, termLeft = 300, shifts = [-1, -0.5, 0, 0.5, 1]) {
@@ -483,4 +548,4 @@ function availableSeries(rows, floor, em = 12) {
   return rows.map((r, i) => r.byAccess.instant + r.byAccess.notice - floor - rows.slice(i + 1, i + 1 + em).reduce((s, x) => s + x.earmark, 0));
 }
 
-if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, balanceOn, positionOn, observations, latestDate, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };
+if (typeof module !== 'undefined') module.exports = { marketFix, project, snapshotTotals, latestSnapshot, balanceOn, positionOn, observations, latestDate, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };

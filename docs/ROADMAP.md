@@ -21,6 +21,8 @@ This is the build plan for Claude Code. Work through it phase by phase. Each fea
 - `storage.js`: live save on a computer, optional passphrase encryption of the file, the "file changed on another device" check, a Content-Security-Policy.
 - Mortgage parts: a mortgage split into sub-accounts, each with its own rate, fix and term, projected separately.
 
+**Market rates from yield curves (28 Sep 2026)** - built from the hand-off plan in `docs/YIELD_CURVES.md` (Steps 1-5; Step 6 optional, not started). Opt-in per account and mortgage part; "flat" reproduces the previous engine exactly.
+
 **Priority order**
 1. Phase 0: Foundations
 2. Phase 1: Remortgage planner and life events (Matt's top priority)

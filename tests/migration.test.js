@@ -130,4 +130,15 @@ assert.strictEqual(d.accounts.find(a => a.id === 'pen').access, 'locked');
 r = project(d, 's', 1).rows;
 near(r[0].other, 50000 * 1.005, 'pension grows 6% a year, monthly');
 console.log('  ✓ pensions: locked, growing, counted');
+
+// ---------- 6. version 11: market rates are opt-in, so an older file projects exactly as before ----------
+const v10 = { ...base(), version: 10 }; v10.scenarios.s.growth = true;
+const flatRows = project(TM.migrate({ ...v10, version: 11, rateBasis: null, scenarios: { s: { ...v10.scenarios.s, rates: { kind: 'flat' } } } }), 's', 36).rows;
+const m11 = TM.migrate(v10);
+assert.strictEqual(m11.version, 11);
+assert.deepStrictEqual(m11.scenarios.s.rates, { kind: 'market' }, 'each scenario follows the market curve by default');
+assert.strictEqual(m11.rateBasis, null, 'no curve until one is chosen');
+assert.ok(m11.accounts.every(a => !('rateModel' in a)), 'no account is moved onto market rates by the upgrade');
+assert.deepStrictEqual(project(m11, "s", 36).rows, flatRows, 'identical to the old engine');
+console.log('  ✓ version 11: every scenario on market rates, no account moved onto them, figures identical');
 console.log('All migration checks pass ✓');

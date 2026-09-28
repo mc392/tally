@@ -123,9 +123,9 @@ function normalise(d) {
   d.rules = Object.assign({ cashFloor: 10000, isaUsedTaxYear: new Date().getFullYear(), sweepToSS: 0 }, d.rules || {});
   d.bufferPct ??= 5;
   d.scenarios ||= {
-    cautious: { name: 'Cautious', growth: false, ssReturn: 0, inflation: 0, payRise: 0 },
-    base: { name: 'Base', growth: true, ssReturn: 5, inflation: 3, payRise: 2 },
-    optimistic: { name: 'Optimistic', growth: true, ssReturn: 7, inflation: 2, payRise: 3 },
+    cautious: { name: 'Cautious', growth: false, ssReturn: 0, inflation: 0, payRise: 0, rates: { kind: 'market' } },
+    base: { name: 'Base', growth: true, ssReturn: 5, inflation: 3, payRise: 2, rates: { kind: 'market' } },
+    optimistic: { name: 'Optimistic', growth: true, ssReturn: 7, inflation: 2, payRise: 3, rates: { kind: 'market' } },
   };
   d.scenario ||= 'cautious'; d.horizonMonths ||= 18;
   return d;
@@ -372,7 +372,7 @@ const sw = (checked, act, arg) => `<span class="switch"><input type="checkbox" $
 
 // ---------- charts (SVG + HTML overlay, scrubbable) ----------
 const charts = {};
-function chart(id, { series, height = 170, fmt = short, floor = null, markers = [], bands = [], lines = [] }) {
+function chart(id, { series, height = 170, fmt = short, vfmt = money, floor = null, markers = [], bands = [], lines = [] }) {
   const all = series.flatMap(s => s.pts);
   if (all.length < 2) return `<div class="note">Add at least two balance updates to see a trend.</div>`;
   const t0 = Math.min(...all.map(p => p.t)), t1 = Math.max(...all.map(p => p.t));
@@ -399,7 +399,7 @@ function chart(id, { series, height = 170, fmt = short, floor = null, markers = 
   const fl = floor != null ? `<div class="yl" style="top:${(Y(floor) / H * 100).toFixed(2)}%;right:auto;left:0;color:var(--orange)">floor ${fmt(floor)}</div>` : '';
   const x0 = new Date(t0), x1 = new Date(t1), xm = new Date((t0 + t1) / 2);
   const xl = d => `${MON[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`;
-  charts[id] = { series, t0, t1, lo, hi, H, fmt };
+  charts[id] = { series, t0, t1, lo, hi, H, fmt, vfmt };
   return `<div class="readout" id="${id}-r"></div><div class="chart" id="${id}"><div style="position:relative">${svg}${yl}${fl}<div class="cursor"></div>${series.map((s, i) => `<div class="dot" data-i="${i}" style="background:${s.color}"></div>`).join('')}</div><div class="xl"><span>${xl(x0)}</span><span>${xl(xm)}</span><span>${xl(x1)}</span></div></div>`;
 }
 function niceTicks(lo, hi, n) {
@@ -414,7 +414,7 @@ function mountChart(id) {
   const show = (t, scrub) => {
     const head = new Date(t);
     const label = scrub ? `${head.getUTCDate() > 27 || head.getUTCDate() < 3 ? MON[head.getUTCMonth()] + ' ' + head.getUTCFullYear() : head.getUTCDate() + ' ' + MON[head.getUTCMonth()] + ' ' + head.getUTCFullYear()}` : (c.series[0].whenLabel || 'Latest');
-    r.innerHTML = `<div class="when">${label}</div>` + c.series.map(s => { const p = near(s.pts, t); return `<span class="s"><i style="background:${s.color}"></i>${s.name} ${money(p.v)}</span>`; }).join('');
+    r.innerHTML = `<div class="when">${label}</div>` + c.series.map(s => { const p = near(s.pts, t); return `<span class="s"><i style="background:${s.color}"></i>${s.name} ${c.vfmt(p.v)}</span>`; }).join('');
     if (!scrub) return;
     const x = (t - c.t0) / ((c.t1 - c.t0) || 1) * 100;
     box.querySelector('.cursor').style.left = x + '%';
@@ -580,6 +580,7 @@ function vAccount(id) {
       ${group(row({ title: 'Add a balance for this account', sub: 'On its own - no need to update the others', act: 'add-bal', arg: id, cls: 'act-row', chev: false }) +
         (liab ? '' : row({ title: 'Record money in or out', sub: a.type === 'ss_isa' || a.type === 'pension' ? 'Contributions, withdrawals, dividends' : 'Deposits, withdrawals, interest paid', act: 'add-mtx', arg: id, cls: 'act-row', chev: false })))}
       ${liab ? '' : ratesGroup(a)}
+      ${a.type === 'savings' || a.type === 'cash_isa' ? rateModelGroup('acct:' + a.id) : ''}
       ${cks.length ? group(cks.map(checkRow).join(''), 'Between balances', 'Each gap between two balances entered, and whether what happened in between explains it.') : ''}
       ${manual.length ? group(manual.map(t => row({ title: esc(t.description), sub: fDate(t.date), value: amt(t.amount, { sign: true, color: true, dp: true }), act: 'edit-mtx', arg: t.id })).join(''), 'Money in and out, entered by hand') : ''}
       ${group(
@@ -806,8 +807,9 @@ function vProjection() {
       </div>
       ${short_.length ? group(short_.map(r => row({ title: fMonth(r.date), sub: 'ISAs can’t cover the floor', value: amt(-r.shortfall, { color: true }), act: 'push', arg: 'month:' + r.k })).join(''), 'Shortfalls') : ''}
       ${group(Object.entries(tys).map(([y, t]) => row({ title: `${y}/${String(+y + 1).slice(2)}`, sub: `In ${short(t.in)} · out ${short(t.out)}`, value: amt(t.left), vsub: 'allowance left' })).join(''), 'ISA allowance by tax year', `Uses ${money(data.rules.isaPerPerson)} each for ${esc(data.rules.isaFillOrder.map(person).join(' and '))}, filling ${esc(person(data.rules.isaFillOrder[0]))}’s first. Money taken out of a flexible ISA can be put back in the same tax year without using new allowance; the projection tracks that separately.`)}
+      ${pr.rateLayer.modelled ? `<p class="note">Interest rates: ${layerText(pr.rateLayer)}${pr.rateLayer.active && pr.rateLayer.kind !== 'manual' ? '. Market-implied, not a forecast' : ''}.</p>` : ''}
       ${group(months, 'Month by month', 'Tap a month for the full cash waterfall and ISA workings.')}
-      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Compare plans', sub: 'Two or three scenarios side by side', act: 'push', arg: 'plans' }) + row({ title: 'Range of outcomes and stress tests', sub: 'What markets, rates or a lost income could do', act: 'push', arg: 'risk' }) + row({ title: 'ISA allowance this tax year', sub: 'Per person, with what’s planned by 5 April', act: 'push', arg: 'isayear' }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
+      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Compare plans', sub: 'Two or three scenarios side by side', act: 'push', arg: 'plans' }) + row({ title: 'Range of outcomes and stress tests', sub: 'What markets, rates or a lost income could do', act: 'push', arg: 'risk' }) + row({ title: 'Interest rates', sub: layerText(pr.rateLayer), act: 'push', arg: 'rates' }) + row({ title: 'ISA allowance this tax year', sub: 'Per person, with what’s planned by 5 April', act: 'push', arg: 'isayear' }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
     after: () => { mountChart('c-proj'); mountChart('c-cash'); },
   };
 }
@@ -837,7 +839,8 @@ function vMonth(k) {
         'Balances at month end')}
       ${Object.keys(r.bundleNet).length ? group(Object.entries(r.bundleNet).map(([id, v]) => { const b = bundleById(id); return b ? row({ title: esc(b.name), sub: 'Life event, this month', value: amt(v, { sign: true, color: true }), act: 'push', arg: 'bundle:' + id }) : ''; }).join(''), 'Life events', 'Already included in the figures above.') : ''}
       ${m ? group((r.mortgageParts.length > 1 ? r.mortgageParts.map((p, i) => line(esc(p.name || `Part ${i + 1}`), -p.pay, { sub: p.bal != null ? `${short(p.bal)} left` : 'Flat payment' })).join('') : '') +
-        line('Mortgage payment', -r.mortgagePay) + line('Of which interest', -r.mortgageInterest) + line('Mortgage balance', -r.mortgageBal, { total: true }), 'Mortgage') : ''}</div>`,
+        line('Mortgage payment', -r.mortgagePay) + line('Of which interest', -r.mortgageInterest) + line('Mortgage balance', -r.mortgageBal, { total: true }), 'Mortgage') : ''}
+      ${monthRatesGroup(r)}</div>`,
   };
 }
 function ymKeyOf(d) { const [y, m] = d.split('-').map(Number); return y * 12 + m - 1; }
@@ -849,10 +852,10 @@ function vScenario(key) {
     body: `${group(
       row({ title: 'Include growth and interest', right: sw(s.growth, 'sc-growth', key) }) +
       row({ title: 'Stocks & shares return', value: `${s.ssReturn}% a year`, act: 'edit-scenario', arg: key }) +
-      row({ title: 'Cash ISA and savings interest', value: 'Per account', act: 'tab', arg: 'accounts' }) +
+      row({ title: 'Interest rates', sub: layerText(layerOf(key)), value: esc(TC.KINDS[(s.rates || {}).kind || 'market']), act: 'open-rates', arg: key }) +
       row({ title: 'Spending inflation', value: `${s.inflation}% a year`, act: 'edit-scenario', arg: key }) +
       row({ title: 'Pay rises', value: `${s.payRise}% a year`, act: 'edit-scenario', arg: key }), 'Assumptions',
-      'Inflation and pay rises step up each April. Interest on cash ISAs and savings uses the rate on each account. Growth is added monthly.')}
+      'Inflation and pay rises step up each April. Interest on cash ISAs and savings uses the rate on each account, or the market path for accounts put on market rates. Growth is added monthly.')}
       ${group(
         row({ title: 'Remortgage option', value: esc(optName(s.option)), act: 'edit-scplan', arg: key }) +
         row({ title: 'Rates after a new fix, and trackers', value: `${(+s.rateShift || 0) > 0 ? '+' : ''}${+s.rateShift || 0}%`, act: 'edit-scplan', arg: key }) +
@@ -1426,9 +1429,9 @@ function vReady() {
   };
 }
 const optSummary = o => [o.type === 'tracker' ? `Tracker ${o.rate}%` : `${o.rate}% fixed ${o.fixMonths >= 12 && o.fixMonths % 12 === 0 ? o.fixMonths / 12 + ' years' : o.fixMonths + ' months'}`, +o.fee ? `£${nf0.format(o.fee)} fee${o.feeAdded ? ' added' : ''}` : 'no fee', +o.lump ? `£${nf0.format(o.lump)} lump sum` : '', +o.regular ? `£${nf0.format(o.regular)} a month extra` : ''].filter(Boolean).join(' · ');
-function optionSheet(id) {
+function optionSheet(id, preset) {
   const R = readyNow(); if (!R) return toast('Set a fix end date on your mortgage first', true);
-  const o = id ? data.remortgageOptions.find(x => x.id === id) : { name: '', type: 'fixed', rate: null, fixMonths: 60, afterRate: R.part.newRate ?? null, fee: 999, feeAdded: false, lump: 0, regular: 0, capPct: 10, termMonths: null };
+  const o = id ? data.remortgageOptions.find(x => x.id === id) : { name: '', type: 'fixed', rate: null, fixMonths: 60, afterRate: R.part.newRate ?? null, fee: 999, feeAdded: false, lump: 0, regular: 0, capPct: 10, termMonths: null, ...(preset || {}) };
   formSheet({
     title: id ? o.name : 'New deal', values: o,
     sections: [
@@ -1464,11 +1467,11 @@ function vCompare() {
     ${line('Net worth', r => r.net, { best: true, low: false })}
     ${line('Lowest cash', r => r.lowestCash, { best: true, low: false, fmt: r => `${money(r.lowestCash)}<div class="sub">${fMonth(r.lowestMonth, true)}</div>` })}
   </tbody></table></div>`;
-  const cisa = C.cashIsaRate;
+  const cisa = C.cashRateWin != null ? C.cashRateWin : C.cashIsaRate;
   const opts = res.filter(r => r.option.id);
   const keep = opts.map(r => {
     const rate = +r.option.rate, save = 10 * rate, earn = 10 * cisa, d = save - earn;
-    return row({ title: esc(r.option.name), sub: `Overpaying £1,000 saves about £${Math.round(save)} a year in interest at ${rate}%; kept in a cash ISA at ${cisa.toFixed(1)}% it earns about £${Math.round(earn)}.`, value: Math.abs(d) < 1 ? 'About even' : d > 0 ? 'Overpay' : 'Keep cash', vsub: Math.abs(d) < 1 ? '' : `by £${Math.round(Math.abs(d))} a year` });
+    return row({ title: esc(r.option.name), sub: `Overpaying £1,000 saves about £${Math.round(save)} a year in interest at ${rate}%; kept in a cash ISA at ${cisa.toFixed(1)}% (its average over these ${W / 12} years on this plan’s rates) it earns about £${Math.round(earn)}.`, value: Math.abs(d) < 1 ? 'About even' : d > 0 ? 'Overpay' : 'Keep cash', vsub: Math.abs(d) < 1 ? '' : `by £${Math.round(Math.abs(d))} a year` });
   }).join('');
   const grids = opts.map(r => { const g = rateGrid(r.option, C.balAtSwitch, 60, C.termLeft); return `<div class="gh">${esc(r.option.name)}</div><div class="cmpwrap"><table class="cmp"><thead><tr><th>Rate</th>${g.map(x => `<th>${(+r.option.rate + x.shift).toFixed(2)}%</th>`).join('')}</tr></thead><tbody>
       <tr><th>Payment</th>${g.map(x => `<td class="${x.shift === 0 ? 'best' : ''}">${money(x.payment)}</td>`).join('')}</tr>
@@ -1479,6 +1482,7 @@ function vCompare() {
       <div class="chips">${[[24, '2 years'], [36, '3 years'], [60, '5 years']].map(([m, l]) => `<button class="${m === W ? 'on' : ''}" data-act="cmp-win" data-arg="${m}">${l}</button>`).join('')}</div>
       <section class="card"><div class="gh">Over ${W / 12} years from the switch<b>to ${fMonth(C.endDate)}</b></div>${tbl}</section>
       ${opts.length ? '' : '<p class="note">Add the deals you are considering on the readiness page to compare them with doing nothing.</p>'}
+      ${C.market.length ? group(C.market.map(q => row({ title: `${q.months / 12}-year fix`, sub: `Market ${pctf(q.fwdAER)} ${signedPct(q.margin)} margin${q.marginSource === 'typical' ? ' (typical)' : ''} · tap to add as a deal`, value: pctf(q.rate), act: 'add-option-market', arg: q.months })).join(''), `Market-implied at ${fMonth(C.switchDate)}`, `What a new fix is likely to cost when you switch, from the ${esc(C.market[0].label.toLowerCase())} curve${C.market[0].asOf ? ` as at ${fDate(C.market[0].asOf)}` : ''}. Not an offer: a real one beats it.`) : ''}
       ${keep ? group(keep, 'Overpay or keep the cash?', 'Mortgage interest saved and cash ISA interest are both tax-free, so the rates compare directly. Money used to overpay can’t be taken back out, so keeping it has value of its own.') : ''}
       ${grids ? `<section class="card">${grids}<p class="note" style="margin:10px 0 0">Payment when the deal starts, and interest plus fees over five years, at the rate and ±0.5% and ±1%.</p></section>` : ''}
       <p class="note">Worked out in the ${esc(data.scenarios[sk].name)} scenario, through the whole household projection. Highlighted figures are the best in each row. Projections, not advice.</p>`,
@@ -1671,7 +1675,7 @@ function vMortgage() {
   return {
     title: 'Mortgage', large: true, back: 'Plan', right: one ? `<button class="pill" data-act="edit-part" data-arg="${esc(parts[0].id)}" style="color:var(--accent)">Edit</button>` : '',
     body: `<div class="hero"><div class="cap">Monthly payment${one ? '' : `, ${parts.length} parts`}</div><div class="big amt">${money(mt.payment, { dp: 0 }).replace('£', '<span class="p">£</span>')}</div>${eq != null ? `<div class="eq">Home equity ${amt(eq)}</div>` : ''}</div>
-      ${readyGroup}${body}${outlook ? group(outlook, 'Projection') : ''}
+      ${readyGroup}${body}${outlook ? group(outlook, 'Projection') : ''}${one && parts[0].rate != null && parts[0].rate !== '' ? rateModelGroup('part:' + parts[0].id) : ''}
       <p class="note">${anyFull ? `The projection runs ${one ? 'the balance' : 'each part'} down month by month. If you set a rate after the fix and an end date, the payment is recalculated when the fix ends and flows into your monthly surplus.${one ? '' : ' A part that is paid off stops costing anything.'}` : `Add the balance and rate to see the balance fall over time, and a post-fix rate to model a remortgage. Until then, the payment${one ? '' : 's'} above ${one ? 'is' : 'are'} used as a flat monthly cost.`}</p>`,
   };
 }
@@ -1683,8 +1687,239 @@ function vMortgagePart(id) {
     title: partName(p, i), large: true, back: 'Mortgage', right: `<button class="pill" data-act="edit-part" data-arg="${esc(p.id)}" style="color:var(--accent)">Edit</button>`,
     body: `<div class="hero"><div class="cap">Monthly payment</div><div class="big amt">${money(+p.payment || 0, { dp: 0 }).replace('£', '<span class="p">£</span>')}</div></div>
       ${group(partDetails(p, i), 'Details')}
+      ${p.rate != null && p.rate !== '' ? rateModelGroup('part:' + p.id) : ''}
       ${o.full ? group(row({ title: `Balance by ${fMonth(end.date)}`, value: amt(o.endBal) }) + (o.after ? row({ title: 'Payment after the fix', value: amt(o.after), vsub: chg(o.after - (+p.payment || 0)) + ' a month' }) : ''), 'Projection') : ''}`,
   };
+}
+
+// ---------- market rates (yield curves: curves.js, docs/YIELD_CURVES.md) ----------
+// The curve is prepared each weekday by .github/workflows/rates.yml and served from this site (rates/). The file in
+// use is kept inside the finance file (data.rateBasis), so figures only move when you choose a newer curve.
+const TC = TallyCurves;
+const market = { latest: null, state: 'loading', dates: null };
+const CURVE_COPY = 'tally.curve';
+async function loadCurve() {
+  let c = null;
+  try { const r = await fetch('rates/curve-latest.json', { cache: 'no-cache' }); if (r.ok) c = await r.json(); } catch (e) { }
+  if (!(c && TC.validate(c).ok)) { try { c = JSON.parse(localStorage.getItem(CURVE_COPY) || 'null'); } catch (e) { c = null; } }
+  if (c && TC.validate(c).ok) { market.latest = c; market.state = 'ok'; try { localStorage.setItem(CURVE_COPY, JSON.stringify(c)); } catch (e) { } }
+  else market.state = 'none';
+  if (data) render();
+}
+const newerCurve = () => (market.latest && (!data.rateBasis || market.latest.asOf > data.rateBasis.asOf) ? market.latest : null);
+const slim = c => ({ asOf: c.asOf, shortEnd: { stepMonths: c.shortEnd.stepMonths, forward: c.shortEnd.forward }, long: { tenorsYears: c.long.tenorsYears, forward: c.long.forward } });
+function useCurve(c) {
+  const old = data.rateBasis;
+  data.rateBasis = { source: c.source, asOf: c.asOf, curve: c, previous: old && old.curve ? { asOf: old.asOf, curve: slim(old.curve) } : (old && old.previous) || null };
+  changed(`Using the curve as at ${fDate(c.asOf)}`);
+}
+const pctf = v => (v == null || isNaN(v) ? '–' : `${(Math.round(v * 100) / 100).toFixed(2)}%`);
+const signedPct = v => `${v >= 0 ? '+' : '−'}${pctf(Math.abs(v))}`;
+const layerOf = sk => TC.forScenario(data, data.scenarios[sk]);
+// "Market-implied · curve as at 25 Sep 2026", or why rates are being held flat
+function layerText(L) {
+  if (L.active) return `${esc(L.label)}${L.asOf ? ` · curve as at ${fDate(L.asOf)}` : ''}`;
+  if (L.reason === 'no-curve') return L.wanted === 'history' ? 'Held flat: that earlier curve could not be read' : 'Held flat: no market curve yet';
+  return 'Flat: each account at its own entered rate';
+}
+function stalePill(asOf) {
+  const st = TC.staleness(asOf, todayISO());
+  return st.level === 'red' ? '<span class="pill bad">Out of date</span>' : st.level === 'amber' ? '<span class="pill warn">May be out of date</span>' : '<span class="pill ok">Current</span>';
+}
+// Every account and mortgage part that earns or charges interest, with its rate rule
+function rateItems() {
+  const out = [];
+  for (const a of data.accounts) if ((a.type === 'savings' || a.type === 'cash_isa') && a.active !== false)
+    out.push({ key: 'acct:' + a.id, name: accLabel(a), model: a.rateModel || null, ctx: { rate: TM.rateOn(a, todayISO()), fixEnd: a.access === 'fixed' ? a.maturity : null }, item: a, part: false });
+  data.mortgage.parts.forEach((p, i) => { if (p.rate != null && p.rate !== '') out.push({ key: 'part:' + p.id, name: partName(p, i), model: p.rateModel || null, ctx: { rate: +p.rate, fixEnd: p.fixEnd || null }, item: p, part: true }); });
+  return out;
+}
+const rateItem = key => rateItems().find(x => x.key === key);
+const starterModel = x => TC.defaultModel({ category: x.part ? 'mortgage' : 'savings', fixEnd: x.ctx.fixEnd, access: x.item.access });
+
+function vMarket() {
+  const sk = scenarioKey(), sc = data.scenarios[sk], L = layerOf(sk), basis = data.rateBasis, nw = newerCurve();
+  const mk = basis && TC.compile(basis.curve), prev = basis && basis.previous && TC.compile(basis.previous.curve);
+  const from = (L.active && L.asOf) || (basis && basis.asOf) || todayISO(), T0 = Date.parse(from), YR = 365.25 * 864e5;
+  const grid = fn => Array.from({ length: 121 }, (_, i) => ({ t: T0 + i / 12 * YR, v: fn(i / 12) }));
+  const series = [];
+  if (mk) series.push({ name: 'Market', color: 'var(--c-net)', pts: grid(t => mk.fwd(t)), fill: true });
+  if (L.active && (L.kind !== 'market' || !mk)) series.push({ name: esc(L.label), color: 'var(--c-isa)', pts: grid(t => L.fwd(t)) });
+  if (prev) series.push({ name: `As at ${fDate(basis.previous.asOf)}`, color: 'var(--c-cash)', dash: true, pts: grid(t => prev.fwd(t + (T0 - Date.parse(basis.previous.asOf)) / YR)) });
+  const br = mk ? mk.anchors.bankRate : L.active ? L.anchors.bankRate : null;
+  if (br != null && series.length) series.push({ name: 'Bank Rate today', color: 'var(--orange)', w: 1.4, dash: true, pts: [{ t: T0, v: +br }, { t: T0 + 10 * YR, v: +br }] });
+  if (series.length) series[0].whenLabel = 'In 10 years';
+  const ch = series.length ? chart('c-rates', { series, height: 160, fmt: v => `${v.toFixed(1)}%`, vfmt: pctf }) : '';
+  const items = rateItems(), unset = items.filter(x => !x.model);
+  const curveRows = (basis ? row({ title: 'Curve in use', sub: esc(basis.source || 'Bank of England OIS curve'), value: fDate(basis.asOf), vsub: stalePill(basis.asOf) }) : '') +
+    (nw ? row({ title: basis ? `Use the newer curve, as at ${fDate(nw.asOf)}` : `Use the Bank of England curve as at ${fDate(nw.asOf)}`, sub: basis ? 'Your projection moves to today’s market expectations; the old one is kept to compare' : 'Accounts on market rates follow it from then on', act: 'curve-use', cls: 'act-row', chev: false }) : '') +
+    (!basis && !nw ? row({ title: 'No market curve yet', sub: market.state === 'loading' ? 'Looking for one…' : 'It is published here each weekday once the site’s rates job has run. Until then, a manual path works.' }) : '');
+  const st = basis ? TC.staleness(basis.asOf, todayISO()) : null;
+  const margins = L.active ? [['mortgage', 24, 'Mortgage, 2-year fix'], ['mortgage', 60, 'Mortgage, 5-year fix'], ['savings', 12, 'Savings bond, 1 year'], ['savings', 24, 'Savings bond, 2 years']].map(([cat, m, label]) => {
+    const g = TC.marginFor(L, cat, m);
+    return row({ title: label, sub: g.source === 'quoted' ? `${g.months !== m ? `From the ${g.months / 12}-year quote: ` : ''}quoted ${pctf(g.quoted)}${g.quotedMonth ? ` (${fMonth(g.quotedMonth)})` : ''} less market ${pctf(g.spot)}` : 'A typical figure: no quoted rate published here yet', value: signedPct(g.margin) });
+  }).join('') : '';
+  const sug = mk && mk.suggested;
+  return {
+    title: 'Interest rates', large: true, back: 'Back',
+    body: `${seg(Object.entries(data.scenarios).map(([k, v]) => [k, esc(v.name)]), sk, 'scenario')}
+      ${series.length ? `<section class="card"><div class="gh">Expected Bank Rate<b>next 10 years</b></div>${ch}<div class="legend">${series.map(x => `<span><i style="background:${x.color}"></i>${x.name}</span>`).join('')}</div></section>` : ''}
+      ${st && st.level === 'red' ? `<p class="note">This curve is more than a month old. Use a newer one when it appears, or a manual path meanwhile.</p>` : ''}
+      ${curveRows ? group(curveRows, 'Market curve') : ''}
+      ${group(row({ title: `Rates in ${esc(sc.name)}`, sub: layerText(L), value: esc(TC.KINDS[(sc.rates || {}).kind || 'market']), act: 'edit-rates', arg: sk }), 'This plan', 'Each scenario can take the market’s path as it is, move it, or use one of your own. Compare them from Projection › Compare plans.')}
+      ${items.length ? group(items.map(x => row({ title: esc(x.name), sub: esc(TC.describe(x.model, x.ctx)), value: x.model ? '<span class="pill ok">Market</span>' : '<span class="pill">As entered</span>', act: 'edit-ratemodel', arg: x.key })).join('') +
+        (unset.length ? row({ title: 'Put them all on market rates', sub: 'Sensible starting settings for each; change any of them after', act: 'rates-all', cls: 'act-row', chev: false }) : ''),
+        'Accounts and mortgage', 'An account on market rates follows the curve from the rate you entered today; one “as entered” keeps its own rates, exactly as before. Tap one to choose.') : ''}
+      ${margins ? group(margins, 'Margins for new fixes', 'When a fix ends and rolls into a new one, it is priced at the market rate for that period then, plus this margin - unless you set your own on the account.') : ''}
+      ${sug ? group(row({ title: `Banks passed on about ${Math.round(sug.passThrough * 100)}% of Bank Rate moves`, sub: `${sug.lagMonths} month${sug.lagMonths === 1 ? '' : 's'} later on average, over ${sug.months} months of the Bank’s instant-access savings figures (fit ${sug.r2}). A suggestion only: each account keeps its own setting.` }), 'From history') : ''}
+      <p class="note">Market-implied rates are not a forecast. They include a premium for lending for longer, and they move every day. Savings rates usually pass on only part of each Bank Rate move, and later; margins and pass-through are assumptions worth revisiting. Tax on interest outside ISAs is not included.</p>
+      <p class="note">Source: Bank of England yield curves and statistical database.</p>`,
+    after: () => series.length && mountChart('c-rates'),
+  };
+}
+
+// On an account's or a mortgage part's own page (6.2): its rule in words, and its path with each repricing marked
+function rateModelGroup(key) {
+  const x = rateItem(key); if (!x) return '';
+  const sk = scenarioKey(), L = layerOf(sk);
+  let ch = '';
+  if (x.model && L.active && latestSnapshot(data)) {
+    const pr = project(data, sk, 120), P = (x.part ? pr.partPaths : pr.paths)[x.item.id];
+    if (P) {
+      const pts = pr.rows.map((r, i) => ({ t: monthEndT(r.date), v: P.rates[i] }));
+      const markers = P.reprices.map(rp => ({ t: monthEndT(pr.rows[rp.i].date), v: 1 }));
+      ch = `<div style="padding:8px 16px 0">${chart('c-ratepath', { series: [{ name: 'Rate', color: 'var(--c-isa)', pts, whenLabel: 'In 10 years' }], height: 110, fmt: v => `${v.toFixed(1)}%`, vfmt: pctf, markers })}</div>`;
+    }
+  }
+  const rows = row({ title: esc(TC.describe(x.model, x.ctx)), sub: x.model ? layerText(L) : 'Tap to have it follow the market curve instead', act: 'edit-ratemodel', arg: key }) +
+    (x.model ? '' : row({ title: 'Use market rates', sub: esc(TC.describe(starterModel(x), x.ctx)), act: 'rate-market', arg: key, cls: 'act-row', chev: false }));
+  return `<section class="group"><div class="gh">In the projection</div><div class="list">${rows}</div>${ch}<div class="gf">${x.model ? 'Green marks are the months it reprices. Market-implied, not a forecast.' : 'At the moment the projection carries its entered rate forward.'} <a href="#" data-act="push" data-arg="rates">Interest rates</a></div></section>`;
+}
+function rateModelSheet(key) {
+  const x = rateItem(key); if (!x) return;
+  const fixEnd = x.ctx.fixEnd, m = x.model || starterModel(x), R = m.rollover || { kind: 'variable', termMonths: x.part ? 24 : 12 };
+  const vals = { kind: x.model ? m.kind : '', passThrough: Math.round((+m.passThrough || 0) * 100), lagMonths: +m.lagMonths || 0, floor: m.floor, spread: m.spread, rkind: R.kind || 'variable', termMonths: R.termMonths, margin: R.margin, manualRate: R.manualRate };
+  const kinds = [['', 'As entered, carried forward'], ['variable', 'Variable: follows Bank Rate'], ['tracker', 'Tracker: Bank Rate plus a margin'], ...(fixEnd ? [['fixed', `Fixed until ${fMonth(fixEnd)}, then…`]] : m.kind === 'fixed' ? [['fixed', 'Fixed (no end date set)']] : [])];
+  formSheet({
+    title: 'How the rate moves', values: vals,
+    sections: [
+      { head: x.name, foot: fixEnd ? '' : x.part ? 'Set a “Fixed until” date on this part to model what happens when a fix ends.' : 'For a fixed-term account, set its access to Fixed term with a maturity date to model what happens when it ends.', fields: [{ key: 'kind', label: 'Rate', type: 'select', stack: true, options: kinds }] },
+      { head: 'Following Bank Rate', foot: 'Pass-through is the share of each Bank Rate move passed on, and lag how many months later. Leave the margin blank and it is set so the rate starts at the one you entered.', fields: [
+        { key: 'passThrough', label: 'Pass-through', type: 'percent', unit: '%' }, { key: 'lagMonths', label: 'Lag', type: 'number', unit: 'months' },
+        { key: 'floor', label: 'Never below', type: 'percent', unit: '%', optional: true }, { key: 'spread', label: 'Margin over Bank Rate', type: 'percent', unit: '%', optional: true, ph: 'Worked out' }] },
+      ...(fixEnd ? [{ head: `When the fix ends, ${fMonth(fixEnd)}`, foot: x.part ? 'The lender’s variable rate starts from your “Rate after the fix” and moves with Bank Rate. A new fix is priced at the market rate for that period, plus the margin; blank uses today’s quoted rates less today’s market rate.' : 'Easy access starts from today’s quoted instant-access rate if there is one. A new fix is priced at the market rate for that period, plus the margin (blank: worked out from quoted rates).', fields: [
+        { key: 'rkind', label: 'Then', type: 'select', stack: true, options: [['variable', x.part ? 'The lender’s variable rate' : 'Easy access, following Bank Rate'], ['refix', 'A new fix at market rates'], ['manual', 'A rate I set'], ...(x.part ? [] : [['close', 'Paid out as cash']])] },
+        { key: 'termMonths', label: 'New fix for', type: 'number', unit: 'months' }, { key: 'margin', label: 'Margin', type: 'percent', unit: '%', optional: true, ph: 'Worked out' },
+        { key: 'manualRate', label: 'Rate I set', type: 'percent', unit: '%', optional: true }] }] : [])],
+    onSave: v => {
+      if (!v.kind) { delete x.item.rateModel; return changed('Back to its entered rate'); }
+      if (!(v.passThrough >= 0 && v.passThrough <= 150)) { toast('Pass-through between 0% and 150%', true); return false; }
+      if (v.kind === 'fixed' && v.rkind === 'manual' && v.manualRate == null) { toast('Enter the rate for after the fix', true); return false; }
+      const nm = { kind: v.kind, passThrough: v.passThrough / 100, lagMonths: Math.max(0, Math.round(v.lagMonths || 0)), floor: v.floor, spread: v.spread };
+      if (v.kind === 'fixed') nm.rollover = { kind: v.rkind, termMonths: Math.max(1, Math.round(v.termMonths || 24)), margin: v.margin, manualRate: v.manualRate };
+      x.item.rateModel = nm;
+      changed(market.state === 'ok' || data.rateBasis ? 'Rate settings saved' : 'Saved. It follows the market once a curve is in use');
+    },
+  });
+}
+function allOnMarket() {
+  const todo = rateItems().filter(x => !x.model);
+  if (!todo.length) return;
+  for (const x of todo) x.item.rateModel = starterModel(x);
+  changed(`${todo.length} on market rates`);
+}
+// Choosing a scenario's rates: which kind, then its settings
+function rateScenarioSheet(sk) {
+  const s = data.scenarios[sk], cur = (s.rates || {}).kind || 'market';
+  const opt = (k, sub) => `<button class="row act-row" data-sact="${k}"><div class="main"><div class="ttl" style="color:var(--label)">${esc(TC.KINDS[k])}</div><div class="sub">${sub}</div></div>${k === cur ? `<span class="val" style="color:var(--accent)">${CHECK}</span>` : ''}</button>`;
+  sheet({ title: `Rates in ${s.name}`, done: null, body: `<section class="group"><div class="list">${[
+    opt('market', 'The Bank of England curve as published: what markets expect today'),
+    opt('shift', 'The market curve moved up or down by a set amount'),
+    opt('twist', 'Short-term and long-term rates moved by different amounts'),
+    opt('anchor', 'The market for a few years, then a gradual move to a rate you choose'),
+    opt('manual', 'Your own Bank Rate path: a few points, joined up. Works without a curve'),
+    opt('history', 'An earlier curve, to see the plan as it looked at a past review'),
+    opt('flat', 'Ignore market expectations: every account at its own entered rate, as before')].join('')}</div>
+    <div class="gf">Market-implied paths are not forecasts. Only accounts on market rates are affected.</div></section>`,
+    onDone: (form, close, act) => { close(); setTimeout(() => rateKindSheet(sk, act), 50); } });
+}
+function rateKindSheet(sk, kind) {
+  const s = data.scenarios[sk], old = s.rates && s.rates.kind === kind ? s.rates : {}, D = TC.DEFAULTS;
+  const save = (r, msg) => { s.rates = { kind, ...r }; changed(msg || `${s.name}: ${TC.KINDS[kind]}`); };
+  if (kind === 'market' || kind === 'flat') return save({});
+  if (kind === 'history') return historySheet(sk);
+  const br = data.rateBasis && data.rateBasis.curve.anchors ? data.rateBasis.curve.anchors.bankRate : null;
+  const pts = Object.fromEntries((old.points || []).map(p => ['p' + p.months, p.rate]));
+  const F = {
+    shift: [{ key: 'shift', label: 'Move by', type: 'percent', unit: 'points', hint: 'e.g. 1 for one point higher, −1 lower' }],
+    twist: [{ key: 'short', label: 'Short end', type: 'percent', unit: 'points' }, { key: 'long', label: 'Long end', type: 'percent', unit: 'points' }, { key: 'twistYears', label: 'Long end from', type: 'number', unit: 'years' }],
+    anchor: [{ key: 'anchorYears', label: 'Market for', type: 'number', unit: 'years' }, { key: 'blendYears', label: 'Then move over', type: 'number', unit: 'years' }, { key: 'neutral', label: 'To Bank Rate of', type: 'percent', unit: '%' }],
+    manual: [{ key: 'today', label: 'Bank Rate today', type: 'percent', unit: '%' }, ...[[6, 'In 6 months'], [12, 'In 1 year'], [24, 'In 2 years'], [60, 'In 5 years']].map(([m, l]) => ({ key: 'p' + m, label: l, type: 'percent', unit: '%', optional: true }))],
+  }[kind];
+  const vals = kind === 'manual' ? { today: old.today ?? br, ...pts } : Object.fromEntries(F.map(f => [f.key, old[f.key] ?? D[f.key]]));
+  const foot = { shift: 'Every point on the market curve, from today on, moves by this much.', twist: 'Moves the start of the curve by one amount and the long end by another, in a straight line between.', anchor: 'Long-dated market rates carry a premium for lending longer. This uses the market for the first years, then moves steadily to a “neutral” rate you choose.', manual: 'Straight lines between the points you enter; flat after the last one. Leave any blank.' }[kind];
+  formSheet({ title: TC.KINDS[kind], values: vals, sections: [{ foot, fields: F }], onSave: v => {
+    if (kind === 'manual') {
+      if (v.today == null) { toast('Enter today’s Bank Rate', true); return false; }
+      return save({ today: v.today, points: [6, 12, 24, 60].filter(m => v['p' + m] != null).map(m => ({ months: m, rate: v['p' + m] })) });
+    }
+    save(v);
+  } });
+}
+async function historySheet(sk) {
+  let dates = market.dates;
+  if (!dates) { try { const r = await fetch('rates/history/index.json', { cache: 'no-cache' }); dates = market.dates = r.ok ? ((await r.json()).dates || []) : []; } catch (e) { dates = []; } }
+  const list = dates.slice().reverse().slice(0, 60);
+  if (!list.length) return toast('No earlier curves are available yet', true);
+  sheet({ title: 'Curve as at', done: null, body: group(list.map(d => `<button class="row act-row" data-sact="${d}"><div class="main"><div class="ttl" style="color:var(--label)">${fDate(d)}</div></div></button>`).join(''), '', 'Published curves, newest first.'),
+    onDone: async (form, close, d) => {
+      close();
+      try {
+        const r = await fetch(`rates/history/${d}.json`); const c = r.ok ? await r.json() : null;
+        if (!c || !TC.validate(c).ok) return toast('That curve could not be read', true);
+        data.scenarios[sk].rates = { kind: 'history', asOf: c.asOf, curve: slim(c) };
+        changed(`${data.scenarios[sk].name}: curve as at ${fDate(c.asOf)}`);
+      } catch (e) { toast('Could not fetch that curve', true); }
+    } });
+}
+// The workings behind one month's rate (6.4)
+function whyText(w) {
+  if (!w) return 'The rate entered for this account, carried forward.';
+  if (w.kind === 'known') return 'The rate you entered for this month.';
+  if (w.kind === 'manual') return 'The rate you set for after the fix.';
+  if (w.kind === 'closed') return 'Paid out as cash when its fix ended.';
+  if (w.kind === 'refix') return `${w.termMonths}-month fix: market ${pctf(w.fwdAER)} ${signedPct(w.margin).replace('+', '+ ').replace('−', '− ')} margin${w.extra ? ` ${signedPct(w.extra)} rate change` : ''}`;
+  return `Bank Rate ${pctf(w.bank)} × ${Math.round(w.passThrough * 100)}% ${signedPct(w.spread + (w.add || 0))}${w.floored ? ', held at its floor' : ''}`;
+}
+function whySheet(arg) {
+  const [ref, k] = arg.split('|'), sk = scenarioKey(), k0 = ymKeyOf(latestSnapshot(data).date);
+  const pr = project(data, sk, +k - k0 + 1), r = pr.rows.find(x => x.k === +k);
+  const isPart = ref.startsWith('p:'), id = ref.slice(2);
+  const w = isPart ? (r.mortgageParts.find(p => p.id === id) || {}).why : (r.market[id] || {}).why;
+  const name = isPart ? partName(data.mortgage.parts.find(p => p.id === id), data.mortgage.parts.findIndex(p => p.id === id)) : accLabel(acc(id));
+  const L = pr.rateLayer, line = (t, v, sub) => row({ title: t, sub, value: v });
+  let rows = '';
+  if (w && w.kind === 'variable') rows = line(`Bank Rate expected in ${fMonth(w.month + '-01')}`, pctf(w.bank), w.lagMonths ? `${w.lagMonths} month${w.lagMonths === 1 ? '' : 's'} back: the lag` : 'This month: no lag') +
+    line(`× pass-through ${Math.round(w.passThrough * 100)}%`, pctf(w.passThrough * w.bank)) + line('+ margin over Bank Rate', signedPct(w.spread), 'Set so the rate started at the one you entered, unless you set it') +
+    (w.add ? line('+ rate change in this plan', signedPct(w.add)) : '') + (w.floored ? line('Held at its floor', pctf(w.floor)) : '') + row({ title: 'Rate this month', value: pctf(w.rate), cls: 'total' });
+  else if (w && w.kind === 'refix') rows = line(`Market rate for a ${w.termMonths}-month fix from ${fMonth(keyToDateStr(k0 + w.i))}`, pctf(w.fwdAER), `${pctf(w.fwdCC)} continuously compounded, as the Bank publishes it`) +
+    line('+ margin', signedPct(w.margin), w.marginSource === 'quoted' ? 'Today’s quoted rate for that length of fix, less today’s market rate' : w.marginSource === 'yours' ? 'Your own figure' : 'A typical figure: no quoted rate yet') +
+    (w.extra ? line('+ rate change in this plan', signedPct(w.extra)) : '') + row({ title: `Fixed rate from ${fMonth(keyToDateStr(k0 + w.i))}`, value: pctf(w.rate), cls: 'total' });
+  else rows = row({ title: whyText(w), value: pctf(w ? w.rate : null) });
+  sheet({ title: name, done: null, body: `<p class="note">${fMonth(r.date)} · ${layerText(L)}</p>${group(rows, 'How this rate was worked out')}<p class="note">Market-implied, not a forecast.</p>` });
+}
+const keyToDateStr = k => `${Math.floor(k / 12)}-${String(k % 12 + 1).padStart(2, '0')}-01`;
+// The month detail (6.3): each account's rate that month, the interest, and any repricing
+function monthRatesGroup(r) {
+  const out = [], sc = data.scenarios[scenarioKey()];
+  for (const a of data.accounts) {
+    if (r.rates[a.id] == null || !(a.type === 'savings' || a.type === 'cash_isa') || r.interest[a.id] == null) continue;
+    const mk = r.market[a.id];
+    out.push(row({ title: esc(accLabel(a)), sub: (mk && mk.repriced ? '<span class="badge isa">Repriced</span> ' : '') + esc(mk ? whyText(mk.why) : 'Its entered rate'), value: pctf(r.rates[a.id]), vsub: money(r.interest[a.id], { sign: true }), act: mk ? 'why' : null, arg: `a:${a.id}|${r.k}` }));
+  }
+  if (r.interest.cashIsaPool != null && r.isaCashFlex > 0.5) out.push(row({ title: 'Instant cash ISAs', sub: 'Pooled: their balance-weighted rate', value: pctf(r.cashIsaRate), vsub: money(r.interest.cashIsaPool, { sign: true }) }));
+  r.mortgageParts.forEach((p, i) => { if (p.rate == null) return; out.push(row({ title: esc(partName(data.mortgage.parts[i] || p, i)) + (r.mortgageParts.length > 1 ? '' : ' interest'), sub: (p.repriced ? '<span class="badge out">Repriced</span> ' : '') + esc(p.why ? whyText(p.why) : 'Its entered rate'), value: pctf(p.rate), vsub: money(-p.interest, { sign: true }), act: p.why ? 'why' : null, arg: `p:${p.id}|${r.k}` })); });
+  return out.length ? group(out.join(''), 'Interest rates', `${sc.growth ? '' : 'Growth and interest are off in this scenario, so savings earn nothing here. '}${layerText(layerOf(scenarioKey()))}. Tap a market rate for its workings.`) : '';
 }
 
 // ---------- sheets ----------
@@ -1950,7 +2185,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports, isayear: vIsaYear, goal: vGoal, risk: vRisk, checks: vChecks })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports, isayear: vIsaYear, goal: vGoal, risk: vRisk, checks: vChecks, rates: vMarket })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -2006,6 +2241,10 @@ const actions = {
   'edit-checks': () => formSheet({ title: 'When to ask', values: data.rules.checks, sections: [{ foot: 'A gap between two balances is listed when nothing explains more than this much of it: the larger of the two.', fields: [{ key: 'abs', label: 'More than', type: 'money' }, { key: 'pct', label: 'Or more than', type: 'percent', unit: '% of the balance' }] }], onSave: v => { data.rules.checks = { abs: Math.max(0, v.abs), pct: Math.max(0, v.pct) }; changed('Saved'); } }), 'edit-goal': id => goalSheet(id || null), 'mc-vol': v => { ui.mcVol = +v; render(); }, reminder: downloadReminder, 'edit-rule': id => ruleSheet(id || null),
   'undo-import': id => { const i = data.imports.find(x => x.id === id); if (!i || !confirm(`Remove the ${i.count} transactions this import added?`)) return; data.transactions = data.transactions.filter(t => t.batch !== id); data.imports = data.imports.filter(x => x.id !== id); changed('Import removed'); },
   'cmp-sc': k => { const cur = (ui.cmpSc || Object.keys(data.scenarios)).filter(x => data.scenarios[x]); ui.cmpSc = cur.includes(k) ? (cur.length > 1 ? cur.filter(x => x !== k) : cur) : [...cur, k].slice(-3); render(); }, 'leak-ok': () => { ui.leak = null; render(); },
+  'curve-use': () => { const c = newerCurve(); if (c) useCurve(c); }, 'edit-rates': rateScenarioSheet, 'edit-ratemodel': rateModelSheet, 'rates-all': allOnMarket, why: whySheet,
+  'rate-market': key => { const x = rateItem(key); if (!x) return; x.item.rateModel = starterModel(x); changed(data.rateBasis ? 'On market rates' : 'On market rates once a curve is in use'); },
+  'open-rates': k => { if (k) ui.scenario = k; actions.push('rates'); },
+  'add-option-market': m => { const C = compareOptions(data, scenarioKey(), 60, thisMonth()), q = C.market && C.market.find(x => x.months === +m); if (q) optionSheet(null, { name: `Market ${q.months / 12}-year fix`, rate: Math.round(q.rate * 100) / 100, fixMonths: q.months }); },
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),
   'del-snap': d => { if (!confirm(`Delete the update from ${fDate(d)}?`)) return; data.snapshots = data.snapshots.filter(s => s.date !== d); ui.stacks[ui.tab].pop(); changed('Update deleted'); },
@@ -2030,6 +2269,7 @@ window.addEventListener('beforeunload', e => { if (meta.dirty && !framed) { e.pr
 // ---------- start ----------
 restore();
 readyBaseline();
+loadCurve();
 if (!framed && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
 if (!framed) { const l = document.createElement('link'); l.rel = 'manifest'; l.href = 'manifest.webmanifest'; document.head.appendChild(l); }
 render();

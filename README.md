@@ -11,6 +11,7 @@ Your figures live in **one file you own** (`family-finances.json`) in iCloud Dri
 - **Projection** – month by month, in each scenario, 18 months to 10 years, optionally in today's money. Compare up to three whole plans side by side. A range of 2,000 possible futures, and one-tap stress tests.
 - **Plan** – income and spending that can start and stop on a month, a 24-month cash-flow calendar, the mortgage (split into parts if it has them), life events from templates (baby, move, renovation, car, big trip, career break), goals, and ISA rules (£20k each, one person's filled first).
 - **Remortgage** – a readiness screen for the next fix end (what you'll have free to overpay, what's earmarked, key dates), a warning when a change eats into it, an optional glide path or target, and a side-by-side comparison of the deals you're weighing up.
+- **Interest rates** – optionally, savings, cash ISAs and mortgage parts can follow the Bank of England's market-implied path for Bank Rate instead of holding today's rate for ever: variable rates move with it (partly, and late), and a fix that ends reprices at what a new one is likely to cost then. Scenarios can move the path, use your own, or ignore it. Market-implied is not a forecast.
 - **Spending** – import bank statement CSVs (Lloyds and American Express recognised; any bank by picking its columns): categories and rules, transfers between your own accounts matched, budget against actual, recurring payments.
 
 ## Files
@@ -25,6 +26,8 @@ Your figures live in **one file you own** (`family-finances.json`) in iCloud Dri
 | `templates.js` | Life-event templates |
 | `transactions.js` | Reading bank CSVs, categories, transfers, budget vs actual, recurring payments |
 | `analysis.js`, `mc-worker.js` | Goals, where changes came from, the ISA year, stress tests and the range of outcomes |
+| `curves.js` | Market interest rates from the Bank of England yield curve (see `docs/YIELD_CURVES.md`) |
+| `scripts/`, `.github/workflows/rates.yml`, `rates/` | Fetches the curve each weekday and publishes it with the site (public market data only) |
 | `sw.js`, `manifest.webmanifest`, `icons/` | Let iPhone install it to the Home Screen and run it offline |
 | `tests/` | Checks the maths still matches the spreadsheet, and that saving and encryption behave |
 
@@ -57,5 +60,5 @@ This repository can safely be public: it holds only code. Your data file stays i
 
 ## Check the maths
 
-Requires Node.js: `node tests/engine.test.js` and `node tests/storage.test.js`.
+Requires Node.js: `node tests/engine.test.js`, `node tests/curves.test.js`, `node tests/storage.test.js` (and the rest of `tests/*.test.js`), and `node tests/pipeline.test.mjs`.
 The browser test also needs Playwright: `npm i --no-save playwright`, then `node tests/browser.test.mjs`.

@@ -1,0 +1,15 @@
+{
+  "_about": "Bank of England statistical database (IADB) series the curve pipeline reads. A null code is skipped: the app then uses a typical margin and says so. Only codes checked against the database belong here - look each one up at https://www.bankofengland.co.uk/boeapps/database/ before filling it in.",
+  "daily": {
+    "bankRate": "IUDBEDR",
+    "sonia": "IUDSOIA"
+  },
+  "monthly": {
+    "mortgage2yFix75": "IUMBV34",
+    "mortgage5yFix75": null,
+    "mortgageSVR": null,
+    "savingsInstant": null,
+    "savingsFix1y": null,
+    "savingsFix2y": null
+  }
+}
