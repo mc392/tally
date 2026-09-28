@@ -296,6 +296,26 @@ try {
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
   await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-plans.png'), fullPage: true });
 
+  console.log('Cash-flow calendar and plan vs actual');
+  await page.click('#tabbar [data-arg="plan"]'); await page.click('#tabbar [data-arg="plan"]');
+  await page.click('#main [data-act="push"][data-arg="calendar"]');
+  await page.waitForSelector('#main [data-act="cal-month"]');
+  ok((await page.$$('#main [data-act="cal-month"]')).length === 24, '24 months listed');
+  await page.click('#main [data-act="cal-month"][data-arg="2027-02"]');
+  const rentId = await page.evaluate(() => data.flows.find(f => f.name === 'Rent').id);
+  await page.waitForSelector(`.sheet-wrap.open #f_f_${rentId}`);
+  await page.fill(`.sheet-wrap.open #f_f_${rentId}`, '2000');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(id => (data.flows.find(f => f.id === id).overrides || {})['2027-02'] === 2000, rentId);
+  ok(await page.evaluate(() => { const r = project(data, scenarioKey(), 36).rows; const feb = r.find(x => x.date === '2027-02-01'), mar = r.find(x => x.date === '2027-03-01'); return Math.abs((feb.spend - feb.mortgagePay) - (mar.spend - mar.mortgagePay) - 1000) < 0.01; }), 'Feb 2027 rent set to £2,000: that month only, £1,000 more than usual');
+  ok((await page.textContent('#main')).includes('Set by hand'), 'the month is marked as set by hand');
+  await page.evaluate(() => { const d = new Date(); data.snapshots.push({ date: '2026-12-01', balances: { cur: 4000, isa: 98765 } }); changed(); });
+  await page.evaluate(() => actions.push('snap:2026-12-01'));
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('Against plan'));
+  ok(await page.evaluate(() => { const dr = drift(data, data.scenario, '2026-12-01'); return dr && document.querySelector('#main').textContent.includes(money(dr.expected.net)); }), 'a balance update shows what the plan expected and the difference');
+  await page.evaluate(() => { data.snapshots = data.snapshots.filter(x => x.date !== '2026-12-01'); ui.stacks[ui.tab].pop(); changed(); });
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
   console.log('Newer files');
   const refused = await page.evaluate(async () => { const f = JSON.stringify({ app: 'tally', version: TallyModel.VERSION + 1, accounts: [], snapshots: [] }); return await loadText(f, 'future.json'); });
   ok(refused === false && await page.evaluate(() => data.bundles.length === 1), 'a file from a newer Tally is refused, and nothing is replaced');

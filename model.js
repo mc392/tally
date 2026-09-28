@@ -33,8 +33,12 @@
 //   scenarios[k].bundles - {bundleId: true|false} life events this scenario switches on or off; absent = as the event is set.
 //   scenarios[k].rateShift - percentage points added to tracker rates and rates after a new fix, in this scenario.
 //   A scenario is therefore a whole plan: assumptions + which events + which remortgage option.
+//
+// Version 6 (Sep 2026):
+//   flows[].overrides - {'YYYY-MM': amount} months set by hand in the cash-flow calendar. The figure is that
+//              month's actual amount: no inflation or pay rise is applied on top of it.
 const TallyModel = (() => {
-  const VERSION = 5;
+  const VERSION = 6;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -145,7 +149,10 @@ const TallyModel = (() => {
       if (!bundleOn(b, sc)) continue;
       const cost = f.kind === 'spend' || (f.kind === 'oneoff' && f.amount < 0);
       const k = (+b.scale || 0) * (cost ? 1 + (+b.contingency || 0) / 100 : 1);
-      out.push(k === 1 ? f : { ...f, amount: (+f.amount || 0) * k });
+      if (k === 1) { out.push(f); continue; }
+      const g = { ...f, amount: (+f.amount || 0) * k };
+      if (f.overrides) g.overrides = Object.fromEntries(Object.entries(f.overrides).map(([m, v]) => [m, (+v || 0) * k]));
+      out.push(g);
     }
     return out;
   }

@@ -2,6 +2,13 @@
 // Works on the current data file version only (see model.js); older files are migrated before they get here.
 const EM = typeof TallyModel !== 'undefined' ? TallyModel : require('./model.js');
 const LIAB_TYPES = new Set(['card', 'card_0', 'tax']);
+// A flow's amount in month k. A month set by hand in the cash-flow calendar (flow.overrides['YYYY-MM'])
+// is the actual figure for that month, so the scenario's inflation or pay rise is NOT applied on top of it.
+const monthStr = k => `${Math.floor(k / 12)}-${String(k % 12 + 1).padStart(2, '0')}`;
+function amountAt(f, k, factor = 1) {
+  const o = f.overrides && f.overrides[monthStr(k)];
+  return o != null && o !== '' ? +o : (+f.amount || 0) * factor;
+}
 const GROUPS = {
   ss_isa:   { label: 'Stocks & shares ISAs', pool: 'isa',  kind: 'ss' },
   cash_isa: { label: 'Cash ISAs',            pool: 'isa',  kind: 'cash' },
@@ -97,9 +104,9 @@ function snapshotTotals(data, snap) {
 function monthlyBudget(data, when) {
   const k = EM.monthKey(when || new Date().toISOString().slice(0, 7));
   const live = EM.effectiveFlows(data).filter(f => f.kind !== 'oneoff' && EM.flowActive(f, k));
-  const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + (+f.amount || 0), 0);
+  const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + amountAt(f, k), 0);
   const mPay = mortgageTotals(data).payment;
-  const spend = live.filter(f => f.kind === 'spend').reduce((s, f) => s + (f.linked === 'mortgage' ? mPay : +f.amount || 0), 0);
+  const spend = live.filter(f => f.kind === 'spend').reduce((s, f) => s + (f.linked === 'mortgage' ? mPay : amountAt(f, k)), 0);
   const buffer = spend * (+data.bufferPct || 0) / 100;
   return { income, spend, buffer, out: spend + buffer, surplus: income - spend - buffer };
 }
@@ -177,8 +184,8 @@ function project(data, scenarioKey, months) {
       if (!EM.flowActive(f, k)) continue;
       let v = 0;
       if (f.kind === 'oneoff' && f.amount < 0) v = -f.amount;
-      else if (f.bundle && f.kind === 'spend' && f.amount > 0) v = f.amount * (f.inflates ? infF : 1);
-      else if (f.bundle && f.kind === 'income' && f.amount < 0) v = -f.amount * payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn);
+      else if (f.bundle && f.kind === 'spend') v = Math.max(0, amountAt(f, k, f.inflates ? infF : 1));
+      else if (f.bundle && f.kind === 'income') v = Math.max(0, -amountAt(f, k, payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn)));
       if (v) { const l = f.bundle ? bname(f.bundle) : f.name; by[l] = (by[l] || 0) + v; }
     }
     return by;
@@ -241,12 +248,14 @@ function project(data, scenarioKey, months) {
     const mBal = anyBal ? mParts.reduce((s, p) => s + (p.bal || 0), 0) : null;
 
     const live = flows.filter(f => EM.flowActive(f, k));
-    const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + (+f.amount || 0) * payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn), 0);
+    const incomeOf = f => amountAt(f, k, payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn));
+    const spendOf = f => amountAt(f, k, f.inflates ? infF : 1);
+    const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + incomeOf(f), 0);
     let spend = 0;
     for (const f of live) {
       if (f.kind !== 'spend') continue;
       if (f.linked === 'mortgage') spend += mPay;
-      else spend += (+f.amount || 0) * (f.inflates ? infF : 1);
+      else spend += spendOf(f);
     }
     const buffer = spend * (+data.bufferPct || 0) / 100;
     const surplus = income - spend - buffer;
@@ -255,8 +264,7 @@ function project(data, scenarioKey, months) {
     // what each life event adds or takes away this month (income − costs, one-offs included)
     const bundleNet = {};
     for (const f of live) if (f.bundle) {
-      const v = f.kind === 'income' ? (+f.amount || 0) * payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn)
-        : f.kind === 'spend' ? -(+f.amount || 0) * (f.inflates ? infF : 1) : +f.amount || 0;
+      const v = f.kind === 'income' ? incomeOf(f) : f.kind === 'spend' ? -spendOf(f) : +f.amount || 0;
       bundleNet[f.bundle] = (bundleNet[f.bundle] || 0) + v;
     }
     const payments = evs.filter(e => e.amount < 0).reduce((s, e) => s + e.amount, 0);
@@ -360,6 +368,25 @@ function readiness(data, scenarioKey, today) {
   };
 }
 
+// ---------- plan vs actual (Phase 1.7) ----------
+// For the balance update on `date`: what the projection made from the update before it expected by then,
+// against what was recorded. Expected = the projected month-end before the update's month.
+function drift(data, sk, date) {
+  const snaps = [...data.snapshots].sort((a, b) => a.date.localeCompare(b.date));
+  const i = snaps.findIndex(x => x.date === date);
+  if (i < 1) return null;
+  const prev = snaps[i - 1], cur = snaps[i];
+  const k1 = ymKey(ym(prev.date).y, ym(prev.date).m), k2 = ymKey(ym(cur.date).y, ym(cur.date).m);
+  if (k2 <= k1) return null; // same month: nothing projected in between
+  const pr = project({ ...data, snapshots: snaps.slice(0, i) }, sk, k2 - k1);
+  const r = pr.rows.find(x => x.k === k2 - 1);
+  const act = snapshotTotals(data, cur);
+  const exp = { cash: r.closing, isa: r.isa, other: r.other, net: r.net };
+  const actual = { cash: act.cash, isa: act.isa, other: act.other, net: act.net };
+  const diff = Object.fromEntries(Object.keys(exp).map(k => [k, actual[k] - exp[k]]));
+  return { from: prev.date, to: cur.date, months: k2 - k1, expected: exp, actual, diff };
+}
+
 // Run the projection as scenario sk, but with some settings changed, without touching data.
 function projectAs(data, sk, change, months) {
   const sc = { ...data.scenarios[sk || data.scenario], ...change };
@@ -402,4 +429,4 @@ function availableSeries(rows, floor, em = 12) {
   return rows.map((r, i) => r.byAccess.instant + r.byAccess.notice - floor - rows.slice(i + 1, i + 1 + em).reduce((s, x) => s + x.earmark, 0));
 }
 
-if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, compareOptions, rateGrid, availableSeries, GROUPS };
+if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };

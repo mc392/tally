@@ -25,14 +25,15 @@ All reading and writing of the finance file goes through `storage.js`; `app.js` 
 - `node tests/lifeevents.test.js` - the roadmap's done-when for 1.5: baby template months, off = identical projection, shifted = created later, scale and contingency, every template builds valid lines.
 - `node tests/readiness.test.js` - the ladder at the fix end and its reconciliation to net worth, moving a spend across the fix end, a bond that locks money up, glide path and target, earliest part wins; all worked by hand.
 - `node tests/options.test.js` - annuity to the penny, overpayments against an independent month-by-month amortisation, fee added accrues interest, household = amortise, comparison = each scenario on its own, per-scenario events and option.
+- `node tests/calendar.test.js` - a month set by hand replaces that month only with no inflation, scale applies to it, plan vs actual.
 - `node tests/storage.test.js` - encryption round trip, wrong passphrase, tampering, IV reuse, conflict rules.
 - `node tests/browser.test.mjs` - the real app in headless Chromium (needs `npm i --no-save playwright`): live save, picking up another device's save, refusing to overwrite it, encryption on, reopening, unlocking on a new device, no CSP violations. Uses a fake file handle, never a real file.
 - `sw.js`'s `CACHE` must be bumped when a shell file is added or renamed.
 
-## Data file shape (version 5, Sep 2026)
+## Data file shape (version 6, Sep 2026)
 `model.js` owns the shape: `TallyModel.migrate()` upgrades any older file on open (`normalise()` calls it first), and the file on disk only changes when it is next saved. `engine.js` only ever sees the current version. **A change to the shape means bumping `VERSION`, adding a step to `migrate()`, and a test in `tests/migration.test.js`.**
 `people[]`, `accounts[] {id,name,owner,type,rate,active,note,access?,noticeDays?,maturity?,flexible?}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
-`flows[] {id,name,kind:'income'|'spend'|'oneoff',amount,start,end,category,owner,inflates,growth,bundle,on,linked?,settles?}`, `bufferPct`,
+`flows[] {id,name,kind:'income'|'spend'|'oneoff',amount,start,end,category,owner,inflates,growth,bundle,on,linked?,settles?,overrides?{'YYYY-MM':£}}` (overrides: v6), `bufferPct`,
 `bundles[] {id,name,template,start,on,scale,contingency}` (v3, life events),
 `remortgageOptions[] {id,partId,name,type,rate,fixMonths,fee,feeAdded,lump,regular,capPct,termMonths,afterRate}` (v5),
 `mortgage {propertyValue, parts[] {id,name,payment,balance,rate,fixEnd,newRate,termEnd}}`,
@@ -58,6 +59,11 @@ Account types: ss_isa, cash_isa, savings, current, pension, card, card_0, tax. C
 - `compareOptions()` runs "Do nothing" (the part's own rate after the fix) and each deal for the earliest-fixing part through `projectAs()` - the household projection with scenario settings changed, never touching `data` - so every figure on Compare deals is what that scenario would show on its own.
 - **A scenario is a whole plan (1.6):** assumptions + `bundles` (per-scenario on/off, absent = the event's own switch; `TallyModel.bundleOn`) + `option` + `rateShift` (added to tracker rates and rates after a new fix only - never to an existing part's own reversion rate, so existing figures do not move). `effectiveFlows(data, sc)` takes the scenario.
 - Compare plans overlays up to three scenarios: net worth, cash, and `availableSeries()` (available to overpay if the switch were that month), with a difference table at the fix end, +1 and +3 years.
+
+## Cash-flow calendar and plan vs actual (Phase 1.7, Sep 2026)
+- **A month set by hand** is `flow.overrides['YYYY-MM']`, read through `amountAt(f, k, factor)` in `engine.js`: the figure is that month's actual amount, so **no inflation or pay rise is applied on top**. Every place that reads a flow's amount must go through `amountAt` (the projection, `monthlyBudget`, earmarks, life-event net). A life event's `scale` applies to its overrides too. Putting a month back to the usual amount removes the override.
+- The calendar is 24 months from this month; a month opens a sheet with every running income and cost (not the linked mortgage line - that comes from the mortgage) and its one-offs, and can add a one-off in that month.
+- **`drift(data, sk, date)`** compares a balance update with what the projection from the *previous* update expected at the end of the month before it: cash, ISAs, and savings/pensions/debts. Without transactions it cannot split cash between "spending over" and "income under", and cannot split ISAs between markets and contributions, so the screen names both possibilities rather than guessing. Recalibration from actual spending (the rest of 1.7) waits for Phase 2's transactions.
 
 ## Life events (Phase 1.5, Sep 2026)
 A life event is a **bundle**: a row in `bundles[]` plus ordinary flows carrying `bundle: id`, with real dates.

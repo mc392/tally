@@ -565,14 +565,27 @@ function vSnaps() {
     title: 'Balance history', large: true, back: 'Accounts',
     body: group(s.map((x, i) => {
       const t = snapshotTotals(data, x).net, p = s[i + 1] ? snapshotTotals(data, s[i + 1]).net : null;
-      return row({ title: fDate(x.date), sub: `${Object.keys(x.balances).length} accounts`, value: amt(t), vsub: p != null ? chg(t - p) : '', strong: true, act: 'push', arg: 'snap:' + x.date });
+      const dr = drift(data, data.scenario || 'cautious', x.date);
+      return row({ title: fDate(x.date), sub: `${Object.keys(x.balances).length} accounts` + (dr ? ` · ${driftWords(dr.diff.net)}` : ''), value: amt(t), vsub: p != null ? chg(t - p) : '', strong: true, act: 'push', arg: 'snap:' + x.date });
     }).join('') || row({ title: 'No updates yet' }), 'Net worth at each update', 'Each update is a dated milestone. Tap one to see or correct the balances recorded on that day.'),
   };
 }
 
+// "£3.2k behind plan" / "£800 ahead of plan" / "on plan"
+const driftWords = v => Math.abs(v) < 50 ? 'on plan' : `${short(Math.abs(v))} ${v < 0 ? 'behind' : 'ahead of'} plan`;
+function driftGroup(dr) {
+  if (!dr) return '';
+  const parts = [['Cash', dr.diff.cash, 'spending or income differed from plan'], ['ISAs', dr.diff.isa, 'markets, or a different amount paid in'], ['Savings, pensions and debts', dr.diff.other, '']].filter(x => Math.abs(x[1]) >= 50);
+  const why = parts.map(([l, v]) => `${l} ${money(v, { sign: true })}`).join(', ');
+  return group(
+    row({ title: 'Expected by now', sub: `Projected from ${fDate(dr.from)}`, value: amt(dr.expected.net) }) +
+    parts.map(([l, v, hint]) => row({ title: l, sub: hint, value: amt(v, { sign: true, color: true }) })).join('') +
+    row({ title: Math.abs(dr.diff.net) < 50 ? 'On plan' : dr.diff.net < 0 ? 'Behind plan' : 'Ahead of plan', value: amt(dr.diff.net, { sign: true, color: true }), cls: 'total' }),
+    'Against plan', `${driftWords(dr.diff.net).replace(/^./, c => c.toUpperCase())}${why ? ': ' + why : ''}. Worked out in the ${esc(data.scenarios[data.scenario || 'cautious'].name)} scenario from the update before this one.`);
+}
 function vSnap(date) {
   const s = data.snapshots.find(x => x.date === date); if (!s) return vSnaps();
-  const T = snapshotTotals(data, s);
+  const T = snapshotTotals(data, s), dr = drift(data, data.scenario || 'cautious', date);
   const rows = data.people.map(p => {
     const l = data.accounts.filter(a => a.owner === p.id && s.balances[a.id] != null); if (!l.length) return '';
     return group(l.map(a => { const pv = prevValue(a.id, date); return row({ title: esc(a.name), value: amt(s.balances[a.id], { color: true }), vsub: pv != null ? chg(s.balances[a.id] - pv) : '', strong: true, act: 'push', arg: 'acct:' + a.id }); }).join(''), esc(p.name));
@@ -580,7 +593,7 @@ function vSnap(date) {
   return {
     title: fDate(date), large: true, back: 'History',
     body: `<div class="hero"><div class="cap">Net worth</div><div class="big amt">${money(T.net).replace('£', '<span class="p">£</span>')}</div></div>
-      ${rows}${group(row({ title: 'Edit these balances', act: 'update', arg: date, cls: 'act-row', chev: false }) + row({ title: 'Delete this update', act: 'del-snap', arg: date, cls: 'act-row danger', chev: false }))}`,
+      ${driftGroup(dr)}${rows}${group(row({ title: 'Edit these balances', act: 'update', arg: date, cls: 'act-row', chev: false }) + row({ title: 'Delete this update', act: 'del-snap', arg: date, cls: 'act-row danger', chev: false }))}`,
   };
 }
 
@@ -719,7 +732,8 @@ function vPlan() {
       ${group(data.bundles.map(bundleRow).join('') + row({ title: 'Add a life event', act: 'add-bundle', cls: 'act-row', chev: false }), 'Life events', data.bundles.length ? 'Each event is a set of dated lines you can switch on or off, move or scale as one.' : 'A baby, a move, a renovation, a car, a big trip or time off work, as a set of dated costs and income changes you can switch on and off.')}
       ${group(
         row({ title: 'Mortgage', sub: mt.parts.length > 1 ? `${mt.parts.length} parts` : '', value: amt(mt.payment), vsub: mt.balance != null ? `${short(mt.balance)} owed` : 'balance not set', act: 'push', arg: 'mortgage' }) +
-        row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Commitments')}
+        row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }) +
+        row({ title: 'Cash-flow calendar', sub: 'The next 24 months, each one editable', act: 'push', arg: 'calendar' }), 'Commitments')}
       ${group(
         row({ title: 'Cash floor', value: amt(r.cashFloor), act: 'edit-rules' }) +
         row({ title: 'ISA allowance', value: `${amt(r.isaPerPerson)} each`, vsub: `${esc(person(r.isaFillOrder[0]))}’s fills first`, act: 'edit-rules' }) +
@@ -765,6 +779,54 @@ function vEvents() {
       `One-off items<b>net ${money(net, { sign: true })}</b>`, 'Switch items off to see the projection without them. They stay here for later.')}
       ${group(row({ title: 'Add a payment or receipt', act: 'add-event', cls: 'act-row', chev: false }))}`,
   };
+}
+
+// ---------- cash-flow calendar (Phase 1.7) ----------
+// The next 24 months, each one editable: a month's figure for any income or cost can be set by hand
+// (stored as flow.overrides['YYYY-MM'], used as-is with no inflation), and one-offs dropped into it.
+function vCalendar() {
+  const sk = scenarioKey(), pr = project(data, sk, Math.max(24, ymKeyOf(todayISO()) - ymKeyOf(latestSnapshot(data).date) + 24));
+  if (!pr) return { title: 'Cash-flow calendar', large: true, back: 'Plan', body: '<p class="note">Add your balances first.</p>' };
+  const rows = pr.rows.filter(r => r.date.slice(0, 7) >= thisMonth()).slice(0, 24);
+  const edited = m => data.flows.some(f => f.overrides && f.overrides[m] != null);
+  return {
+    title: 'Cash-flow calendar', large: true, back: 'Plan',
+    body: `<p class="note">Tap a month to change what comes in or goes out in that month only, or to drop a one-off into it.</p>
+      ${group(rows.map(r => {
+        const m = r.date.slice(0, 7), b = [];
+        for (const e of r.events) b.push(`<span class="badge ${e.amount < 0 ? 'out' : 'in'}">${esc(e.name)} ${short(e.amount)}</span>`);
+        if (edited(m)) b.push('<span class="badge isa">Set by hand</span>');
+        const net = r.income - r.spend - r.buffer + r.payments + r.receipts - r.dealCash;
+        return `<button class="row" data-act="cal-month" data-arg="${m}"><div class="main"><div class="ttl">${fMonth(r.date)}</div><div class="sub">in ${short(r.income + r.receipts)} · out ${short(r.spend + r.buffer - r.payments + r.dealCash)}</div>${b.length ? `<div class="badges">${b.join('')}</div>` : ''}</div><div class="val strong">${amt(net, { sign: true, color: true })}<div class="sub">cash ${amt(r.closing)}</div></div>${CHEV}</button>`;
+      }).join(''), `Month by month<b>${esc(data.scenarios[sk].name)}</b>`, 'Net is money in less money out that month, before anything moves into or out of ISAs.')}`,
+  };
+}
+function calendarMonthSheet(m) {
+  const k = TM.monthKey(m);
+  const regular = data.flows.filter(f => f.kind !== 'oneoff' && !f.linked && TM.flowActive(f, k) && (!f.bundle || TM.bundleOn(bundleById(f.bundle) || {}, null)));
+  const oneoffs = data.flows.filter(f => f.kind === 'oneoff' && f.start === m);
+  const vals = {};
+  regular.forEach(f => { vals['f_' + f.id] = f.overrides && f.overrides[m] != null ? +f.overrides[m] : +f.amount || 0; });
+  oneoffs.forEach(f => { vals['o_' + f.id] = f.amount; });
+  const label = f => f.bundle ? `${f.name} (${bundleById(f.bundle)?.name || 'event'})` : f.name;
+  formSheet({
+    title: fMonth(m + '-01'), values: vals,
+    sections: [
+      ...(regular.filter(f => f.kind === 'income').length ? [{ head: 'Coming in this month', fields: regular.filter(f => f.kind === 'income').map(f => ({ key: 'f_' + f.id, label: label(f), type: 'money', hint: f.overrides && f.overrides[m] != null ? `Set by hand · usually ${money(f.amount)}` : '' })) }] : []),
+      ...(regular.filter(f => f.kind === 'spend').length ? [{ head: 'Going out this month', foot: 'A figure you change here is used exactly for this month, with no inflation added. Put it back to the usual amount to undo it.', fields: regular.filter(f => f.kind === 'spend').map(f => ({ key: 'f_' + f.id, label: label(f), type: 'money', hint: f.overrides && f.overrides[m] != null ? `Set by hand · usually ${money(f.amount)}` : '' })) }] : []),
+      ...(oneoffs.length ? [{ head: 'One-offs this month', foot: 'Minus for money out.', fields: oneoffs.map(f => ({ key: 'o_' + f.id, label: label(f), type: 'money' })) }] : [])],
+    extra: `<section class="group"><div class="list"><button class="row act-row" data-sact="add-oneoff"><div class="main"><div class="ttl">Add a one-off in ${fMonth(m + '-01')}</div></div></button></div></section>`,
+    onSave: (v, act) => {
+      if (act === 'add-oneoff') { setTimeout(() => eventSheet(null, null, m), 360); return; }
+      for (const f of regular) {
+        const x = v['f_' + f.id]; if (x == null) continue;
+        if (Math.abs(x - (+f.amount || 0)) > 0.005) (f.overrides ||= {})[m] = x;
+        else if (f.overrides) { delete f.overrides[m]; if (!Object.keys(f.overrides).length) delete f.overrides; }
+      }
+      for (const f of oneoffs) if (v['o_' + f.id] != null) f.amount = v['o_' + f.id];
+      changed(`${fMonth(m + '-01')} saved`);
+    },
+  });
 }
 
 // ---------- remortgage readiness (Phase 1.1, 1.3) ----------
@@ -1245,8 +1307,8 @@ function spendSheet(id, cat, inBundle) {
     },
   });
 }
-function eventSheet(id, inBundle) {
-  const x = id ? flowById(id) : { name: '', amount: -1000, start: inBundle ? inBundle.start : thisMonth(), on: true, settles: '' };
+function eventSheet(id, inBundle, inMonth) {
+  const x = id ? flowById(id) : { name: '', amount: -1000, start: inMonth || (inBundle ? inBundle.start : thisMonth()), on: true, settles: '' };
   const debtOpts = [['', 'Nothing'], ...data.accounts.filter(a => LIAB.has(a.type)).map(a => [a.id, a.name])];
   formSheet({
     title: id ? 'Edit item' : 'New item', values: { ...x, dir: x.amount < 0 ? 'out' : 'in', abs: Math.abs(x.amount), settles: x.settles || '' },
@@ -1330,7 +1392,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -1376,7 +1438,7 @@ const actions = {
   'add-event': a => eventSheet(null, bundleArg(a)), 'edit-event': id => eventSheet(id),
   'add-bundle': templatePicker, 'edit-bundle': bundleSheet,
   'edit-remortgage': remortgageSheet, 'add-option': () => optionSheet(null), 'edit-option': optionSheet, 'edit-scplan': scenarioPlanSheet,
-  'cmp-win': m => { ui.cmpWin = +m; render(); },
+  'cmp-win': m => { ui.cmpWin = +m; render(); }, 'cal-month': calendarMonthSheet,
   'cmp-sc': k => { const cur = (ui.cmpSc || Object.keys(data.scenarios)).filter(x => data.scenarios[x]); ui.cmpSc = cur.includes(k) ? (cur.length > 1 ? cur.filter(x => x !== k) : cur) : [...cur, k].slice(-3); render(); }, 'leak-ok': () => { ui.leak = null; render(); },
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),

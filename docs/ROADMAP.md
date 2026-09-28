@@ -217,6 +217,8 @@ Compare whole plans, not just growth assumptions.
 - Every compared figure matches running that scenario on its own.
 
 ### 1.7 Short-to-mid-term precision
+
+> **Status: calendar and drift done (28 Sep 2026); recalibration from actuals waits for Phase 2.** The calendar is a list of months, each opening an editable sheet, rather than a months × flows grid - a grid with a column per flow does not fit a phone. Drift splits the difference by cash / ISAs / other, and says what each could mean; it cannot yet say "spending £2.1k over" without transactions.
 The period up to the remortgage decision needs the most accuracy.
 
 - **Cash-flow calendar.** A 24-month grid of months (rows) by flows (columns). Every cell can be edited, so known one-offs can be dropped into exact months.
