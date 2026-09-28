@@ -51,6 +51,8 @@
 //              can be told apart from money put in.
 //
 // Version 9 (Sep 2026):
+//   snapshots[].source - 'import' when only a statement import recorded that date (optional, informational; history
+//   charts start at the first date you entered yourself). Absent = entered by you.
 //   snapshots[] may hold ANY subset of accounts: each account has its own dated balances, and the engine works
 //              out the rest (balanceOn in engine.js). An older build would read a one-account update as the whole
 //              position and drop every other account - hence the bump.

@@ -267,7 +267,55 @@ const TallyTx = (() => {
     return out.sort((a, b) => b.perMonth - a.perMonth);
   }
 
-  return { parseCSV, detect, read, fresh, FORMATS, merchantOf, categoryOf, ruleMatches, transferPairs, categorised, budgetVsActual, recalibrate, months, recurring, SPECIAL, hash };
+  // ---------- analytics (Sep 2026) ----------
+  // Money out (spending less refunds, in every category but the special ones), money in (Income) or both ('net':
+  // in positive, out negative), month by month over a window of whole months, split by category, merchant or account.
+  // `partial` is a month still running: it is drawn, never totalled, averaged or compared. `prevMonths` is the window
+  // just before, of the same length, for "against the period before" - pass it only when every month in it has data.
+  const keyOf = (t, by) => (by === 'merchant' ? t.merchant || t.description || '?' : by === 'account' ? t.account : t.cat);
+  const valueOf = (t, measure) => {
+    if (measure === 'income') return t.cat === 'Income' ? t.amount : null;
+    if (measure === 'net') return t.cat === 'Income' || !SPECIAL[t.cat] ? t.amount : null;
+    return SPECIAL[t.cat] ? null : -t.amount;
+  };
+  function insights(list, { months, prevMonths = [], measure = 'spend', by = 'category', account = null, focus = null, partial = null }) {
+    const full = months.filter(m => m !== partial), n = full.length, idx = Object.fromEntries(full.map((m, i) => [m, i]));
+    const inP = new Set(prevMonths), groups = {}, inWindow = [];
+    const series = months.map(m => ({ month: m, spend: 0, income: 0, v: 0, count: 0, partial: m === partial }));
+    const at = Object.fromEntries(months.map((m, i) => [m, series[i]]));
+    const g = k => (groups[k] ||= { key: k, total: 0, prev: 0, count: 0, byMonth: full.map(() => 0) });
+    let prevTotal = 0;
+    for (const t of list) {
+      if (account && t.account !== account) continue;
+      if (focus && keyOf(t, focus.by) !== focus.key) continue;
+      const m = t.date.slice(0, 7), v = valueOf(t, measure);
+      if (inP.has(m) && v != null) { prevTotal += v; g(keyOf(t, by)).prev += v; }
+      const s = at[m]; if (!s) continue;
+      if (t.cat === 'Income') s.income += t.amount; else if (!SPECIAL[t.cat]) s.spend -= t.amount;
+      if (v == null) continue;
+      s.v += v; s.count++;
+      if (m === partial) continue;
+      const G = g(keyOf(t, by)); G.total += v; G.count++; G.byMonth[idx[m]] += v; inWindow.push({ ...t, value: v });
+    }
+    const total = full.reduce((a, m) => a + at[m].v, 0), cmp = prevMonths.length === n && n > 0;
+    const sum = Object.values(groups).reduce((a, x) => a + Math.abs(x.total), 0);
+    const rows = Object.values(groups).filter(x => x.count || x.prev).map(x => ({ ...x, avg: n ? x.total / n : 0, share: sum ? Math.abs(x.total) / sum : 0, change: cmp ? x.total - x.prev : null }))
+      .sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+    // what is changing: the average of the last three whole months against the three before, where the move is
+    // at least £20 a month and a tenth of what it was
+    let movers = null;
+    if (n >= 6) {
+      const avg = (arr, a, b) => arr.slice(a, b).reduce((x, y) => x + y, 0) / (b - a);
+      movers = rows.map(r => { const before = avg(r.byMonth, n - 6, n - 3), after = avg(r.byMonth, n - 3, n); return { key: r.key, before, after, delta: after - before }; })
+        .filter(x => Math.abs(x.delta) >= Math.max(20, Math.abs(x.before) * 0.1)).sort((a, b) => b.delta - a.delta);
+      movers = { up: movers.filter(x => x.delta > 0).slice(0, 3), down: movers.filter(x => x.delta < 0).reverse().slice(0, 3) };
+    }
+    const biggest = inWindow.sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 5);
+    const count = rows.reduce((a, r) => a + r.count, 0);
+    return { months, full, series, total, avg: n ? total / n : 0, count, perTxn: count ? total / count : 0, prev: cmp ? prevTotal : null, change: cmp ? total - prevTotal : null, rows, movers, biggest };
+  }
+
+  return { insights, insightKey: keyOf, insightValue: valueOf, parseCSV, detect, read, fresh, FORMATS, merchantOf, categoryOf, ruleMatches, transferPairs, categorised, budgetVsActual, recalibrate, months, recurring, SPECIAL, hash };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyTx;

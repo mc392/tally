@@ -88,9 +88,12 @@ const snapsSorted = () => [...data.snapshots].sort((a, b) => a.date.localeCompar
 // (balanceOn / positionOn in engine.js). HOW says how a figure was arrived at, in words.
 const HOW = { observed: '', interest: 'worked out from its interest rate', transactions: 'worked out from transactions', straight: 'estimated between two balances', carried: 'last balance entered' };
 const HOW_SHORT = { observed: '', interest: 'est. at its rate', transactions: 'from transactions', straight: 'estimated', carried: 'last entered' };
-// Month-end points from the first balance ever entered to the latest, plus every update date, each a full worked-out position.
-function historyDates() {
-  const ds = [...new Set(data.snapshots.map(x => x.date))].sort(); if (!ds.length) return [];
+// Month-end points from the first balance you entered to the latest, plus every update date, each a full worked-out
+// position. A date that only a statement import recorded (source:'import') does not start the history: before your first
+// own update, net worth would be one account on its own. Everything imported only is the exception - it starts there.
+const firstSubmitted = () => { const s = snapsSorted(); return (s.find(x => x.source !== 'import') || s[0])?.date; };
+function historyDates(f = firstSubmitted()) {
+  const ds = [...new Set(data.snapshots.map(x => x.date))].filter(d => d >= f).sort(); if (!ds.length) return [];
   const out = new Set(ds), [y0, m0] = ds[0].split('-').map(Number), last = ds.at(-1);
   for (let k = y0 * 12 + m0; ; k++) { const d = new Date(Date.UTC(Math.floor(k / 12), k % 12, 0)).toISOString().slice(0, 10); if (d > last) break; if (d > ds[0]) out.add(d); }
   return [...out].sort();
@@ -454,7 +457,7 @@ function vHome() {
   const equity = m.propertyValue && mt.balance != null ? m.propertyValue - mt.balance : null;
   const big = money(T.net).replace('£', '<span class="p">£</span>');
 
-  const hist = historyDates().map(d => ({ t: Date.parse(d), v: snapshotTotals(data, positionOn(data, d)).net }));
+  const hist = historyDates().map(d => ({ t: Date.parse(d), v: snapshotTotals(data, positionOn(data, d, { entered: true })).net }));
   const nChecks = openChecks().length;
   const fut = [{ t: Date.parse(last.date), v: T.net }, ...pr.rows.map(r => ({ t: monthEndT(r.date), v: r.net }))];
   const ch = chart('c-home', {
@@ -515,7 +518,7 @@ function headerRight() {
 function vPool(key) {
   const p = POOLS.find(x => x.key === key), last = latestSnapshot(data);
   const accs = data.accounts.filter(a => p.types.includes(a.type) && (a.active || last?.balances[a.id]));
-  const hist = historyDates().map(d => ({ t: Date.parse(d), v: poolTotal(positionOn(data, d), p) }));
+  const hist = historyDates().map(d => ({ t: Date.parse(d), v: poolTotal(positionOn(data, d, { entered: true }), p) }));
   const byOwner = data.people.map(pp => {
     const list = accs.filter(a => a.owner === pp.id); if (!list.length) return '';
     return group(list.map(a => accRow(a, last)).join(''), `${esc(pp.name)}<b>${amt(list.reduce((s, a) => s + (last?.balances[a.id] || 0), 0))}</b>`);
@@ -561,7 +564,7 @@ function vAccount(id) {
   const today = balanceOn(data, id, todayISO());
   const pool = poolOf(a.type);
   // month by month from the first balance to today, worked out the same way as everything else
-  const pts = obs.length ? [...new Set([...obs.map(o => o.date), ...historyDates(), todayISO()])].filter(d => d >= obs[0].date && d <= todayISO()).sort()
+  const pts = obs.length ? [...new Set([...obs.map(o => o.date), ...historyDates(obs[0]?.date), todayISO()])].filter(d => d >= obs[0].date && d <= todayISO()).sort()
     .map(d => { const b = balanceOn(data, id, d); return b ? { t: Date.parse(d), v: b.v } : null; }).filter(Boolean) : [];
   const rows = [...obs].reverse().map((o, i, arr) => {
     const nxt = arr[i + 1]; const d = nxt ? o.v - nxt.v : null;
@@ -696,7 +699,7 @@ function balanceSheet(id, date) {
       if (date && v.date !== date) { const old = data.snapshots.find(s => s.date === date); delete old.balances[id]; if (!Object.keys(old.balances).length) data.snapshots = data.snapshots.filter(s => s !== old); }
       const val = Math.round((liab ? -Math.abs(v.bal) : v.bal) * 100) / 100;
       const sn = data.snapshots.find(s => s.date === v.date);
-      if (sn) sn.balances[id] = val; else data.snapshots.push({ date: v.date, balances: { [id]: val } });
+      if (sn) { sn.balances[id] = val; delete sn.source; } else data.snapshots.push({ date: v.date, balances: { [id]: val } });
       changed(`${a.name}: ${money(val)} on ${fDate(v.date)}`);
     },
   });
@@ -728,11 +731,11 @@ function vSnaps() {
   return {
     title: 'Balance history', large: true, back: 'Accounts',
     body: group(s.map((x, i) => {
-      const t = snapshotTotals(data, positionOn(data, x.date)).net, p = s[i + 1] ? snapshotTotals(data, positionOn(data, s[i + 1].date)).net : null;
+      const t = snapshotTotals(data, positionOn(data, x.date, { entered: true })).net, p = s[i + 1] ? snapshotTotals(data, positionOn(data, s[i + 1].date, { entered: true })).net : null;
       const dr = drift(data, data.scenario || 'cautious', x.date);
       const n = Object.keys(x.balances).length;
       return row({ title: fDate(x.date), sub: `${n} account${n === 1 ? '' : 's'} entered` + (dr ? ` · ${driftWords(dr.diff.net)}` : ''), value: amt(t), vsub: p != null ? chg(t - p) : '', strong: true, act: 'push', arg: 'snap:' + x.date });
-    }).join('') || row({ title: 'No updates yet' }), 'Net worth at each update', 'Net worth counts every account: the ones entered that day, and the rest worked out. Tap one to see or correct it.'),
+    }).join('') || row({ title: 'No updates yet' }), 'Net worth at each update', 'Net worth counts every account that had a balance by then: the ones entered that day, and the rest worked out. An account only counts from its first balance. Tap one to see or correct it.'),
   };
 }
 
@@ -978,7 +981,7 @@ function actualsLine() {
 function statementsGroup() {
   const n = data.transactions.length, un = n ? TXL.categorised(data).filter(t => t.cat === 'Uncategorised').length : 0;
   return group(
-    (n ? row({ title: 'Budget vs actual', sub: `${n} transactions from ${data.imports.length} import${data.imports.length === 1 ? '' : 's'}`, act: 'push', arg: 'actuals' }) +
+    (n ? row({ title: 'Spending insights', sub: 'Trends by month, category, shop and account', act: 'push', arg: 'insights' }) + row({ title: 'Budget vs actual', sub: `${n} transactions from ${data.imports.length} import${data.imports.length === 1 ? '' : 's'}`, act: 'push', arg: 'actuals' }) +
       (un ? row({ title: `Sort out ${un} uncategorised`, sub: 'Grouped by shop, one tap each', value: '<span class="pill warn">To do</span>', act: 'push', arg: 'uncat' }) : '') +
       row({ title: 'Recurring payments', act: 'push', arg: 'recurring' }) + row({ title: 'All transactions', act: 'push', arg: 'txns' }) : '') +
     row({ title: 'Import a bank statement (CSV)', act: 'csv-import', cls: 'act-row', chev: false }) +
@@ -1010,7 +1013,7 @@ function csvLoaded(text, name, map) {
       data.imports.push({ id: batch, at: new Date().toISOString(), account: v.account, format: r.format || 'csv', count: f.add.length, dupes: f.dupes, from: r.from, to: r.to });
       if (r.balances && v.bals) for (const b of [r.balances.opening, r.balances.closing]) {
         const sn = data.snapshots.find(x => x.date === b.date);
-        if (sn) sn.balances[v.account] = b.balance; else data.snapshots.push({ date: b.date, balances: { [v.account]: b.balance } });
+        if (sn) sn.balances[v.account] = b.balance; else data.snapshots.push({ date: b.date, balances: { [v.account]: b.balance }, source: 'import' });
       }
       changed(f.add.length ? `Imported ${f.add.length}${f.dupes ? `, skipped ${f.dupes} already there` : ''}` : `Nothing new: all ${f.dupes} were already imported`);
       actions.push(TXL.categorised(data).some(t => t.cat === 'Uncategorised') ? 'uncat' : 'actuals');
@@ -1080,11 +1083,18 @@ function vTxns(arg) {
   let l = TXL.categorised(data);
   if (cat) l = l.filter(t => t.cat === cat && (!range || inRange(t.date, range)));
   if (f === 'acct') l = l.filter(t => t.account === v);
+  // from spending insights: a window of months, one account, a group and maybe a group inside it
+  let q = null;
+  if (f === 'ins') {
+    q = JSON.parse(decodeURIComponent(v));
+    const K = TXL.insightKey, inQ = t => { const m = t.date.slice(0, 7); return m >= q.from && m <= q.to; };
+    l = l.filter(t => inQ(t) && (!q.account || t.account === q.account) && TXL.insightValue(t, q.measure) != null && (!q.by || K(t, q.by) === q.key) && (!q.by2 || K(t, q.by2) === q.key2));
+  }
   l.sort((a, b) => b.date.localeCompare(a.date));
   const shown = l.slice(0, 300);
   return {
-    title: cat || (f === 'acct' ? accName(v) : 'Transactions'), large: true, back: 'Back',
-    body: `${cat ? `<div class="subtitle">${esc(rangeLabel(range))} · ${l.length} transactions · ${money(-l.reduce((s, t) => s + t.amount, 0))}</div>` : ''}` +
+    title: cat || (f === 'acct' ? accName(v) : q ? [q.key, q.key2].filter(Boolean).map((k, i) => ((i ? q.by2 : q.by) === 'account' ? accName(k) : k)).join(' · ') || 'Transactions' : 'Transactions'), large: true, back: 'Back',
+    body: `${q ? `<div class="subtitle">${esc(q.from === q.to ? monthName(q.from) : `${fMonth(q.from + '-01', true)} – ${fMonth(q.to + '-01', true)}`)}${q.account ? ' · ' + esc(accName(q.account)) : ''} · ${l.length} transactions · ${money(l.reduce((s, t) => s + t.amount, 0), { sign: true })}</div>` : ''}${cat ? `<div class="subtitle">${esc(rangeLabel(range))} · ${l.length} transactions · ${money(-l.reduce((s, t) => s + t.amount, 0))}</div>` : ''}` +
       group(shown.map(t => row({ title: esc(t.merchant || t.description), sub: `${fDate(t.date)} · ${esc(accName(t.account))}${t.pair ? ' · matched transfer' : ''}`, value: `${amt(t.amount, { sign: true, color: true, dp: true })}<div class="sub"><span class="catchip ${t.cat === 'Uncategorised' ? 'x' : ''}">${esc(t.cat)}</span></div>`, act: 'cat-tx', arg: t.id })).join('') || row({ title: 'None' }),
         '', l.length > 300 ? `Showing the latest 300 of ${l.length}.` : 'Tap one to change its category.'),
   };
@@ -1119,6 +1129,113 @@ function vActuals() {
       ${recalGroup()}
       ${group(row({ title: 'What the bank’s categories mean', sub: 'e.g. American Express “Groceries” → Living', act: 'bank-cats' }) + row({ title: 'Your rules', value: String(data.categoryRules.length), act: 'push', arg: 'rules' }))}
       <p class="note">Only accounts you have imported are counted. If you pay for things from an account you haven’t imported, those months will look under plan.</p>`,
+  };
+}
+// ---- spending insights (Sep 2026) ----
+// Money out, money in, or both, over a window of whole months; by category, shop or account; one account or all.
+// The month still running is drawn faded and never counted. All the arithmetic is TallyTx.insights (tested in node).
+const INS_MEASURE = [['spend', 'Spending'], ['income', 'Money in'], ['net', 'In and out']];
+const INS_PERIOD = [['3m', '3 months'], ['6m', '6 months'], ['12m', '12 months'], ['ty', 'Tax year'], ['all', 'All']];
+const INS_BY = [['category', 'Category'], ['merchant', 'Shop'], ['account', 'Account']];
+const INS_NEXT = { category: 'merchant', merchant: 'category', account: 'category' }; // what a drill-in is split by
+const addMonth = (m, k) => { const [y, mo] = m.split('-').map(Number), n = y * 12 + mo - 1 + k; return `${Math.floor(n / 12)}-${String(n % 12 + 1).padStart(2, '0')}`; };
+const monthsFrom = (a, b) => { const out = []; for (let m = a; m <= b; m = addMonth(m, 1)) out.push(m); return out; };
+const insState = () => (ui.ins ||= { measure: 'spend', period: '6m', by: 'category', account: '', all: false });
+// The window: whole months ending with the newest whole month that has transactions, plus this month if it has any.
+function insWindow(period) {
+  const ms = TXL.months(data), have = new Set(ms), now = thisMonth(), end = ms.find(m => m < now);
+  const partial = have.has(now) ? now : null;
+  if (!end) return { months: partial ? [partial] : [], full: [], prevMonths: [], partial, gaps: 0 };
+  const oldest = ms.at(-1), len = { '3m': 3, '6m': 6, '12m': 12 }[period];
+  let start = len ? addMonth(end, 1 - len) : period === 'ty' ? (+end.slice(5) >= 4 ? end.slice(0, 4) : String(+end.slice(0, 4) - 1)) + '-04' : oldest;
+  if (start < oldest) start = oldest;
+  const full = monthsFrom(start, end), n = full.length;
+  const prev = period === 'all' ? [] : monthsFrom(addMonth(start, -n), addMonth(start, -1));
+  return { months: partial ? [...full, partial] : full, full, prevMonths: prev.every(m => have.has(m)) ? prev : [], partial, gaps: full.filter(m => !have.has(m)).length };
+}
+const insKeyLabel = (by, k) => (by === 'account' ? accName(k) : k);
+const pctTxt = (a, b) => (b ? ` (${a >= 0 ? '+' : '−'}${Math.round(Math.abs(a / b) * 100)}%)` : '');
+function insBars(id, I, measure) {
+  const two = measure === 'net', vals = s => (two ? [s.income, s.spend] : [s.v]);
+  const top = Math.max(1, ...I.series.flatMap(s => vals(s).map(v => Math.max(0, v))), two ? 0 : I.avg);
+  const ticks = niceTicks(0, top * 1.08, 3).filter(v => v > 0), H = 150, y = v => (Math.max(0, v) / (top * 1.08)) * 100;
+  const colors = two ? ['var(--green)', 'var(--accent)'] : [measure === 'income' ? 'var(--green)' : 'var(--accent)'];
+  const step = I.series.length > 12 ? Math.ceil(I.series.length / 8) : 1;
+  const cols = I.series.map((s, i) => `<button class="bcol${s.partial ? ' part' : ''}" data-i="${i}" aria-label="${esc(fMonth(s.month + '-01'))}: ${two ? `in ${money(s.income)}, out ${money(s.spend)}` : money(s.v)}${s.partial ? ' so far' : ''}">${vals(s).map((v, k) => `<i style="height:${y(v).toFixed(2)}%;background:${colors[k]}"></i>`).join('')}<span class="bx">${i % step ? '' : MON[+s.month.slice(5) - 1]}</span></button>`).join('');
+  charts[id] = { bars: I.series, two, measure, avg: I.avg };
+  return `<div class="readout" id="${id}-r"></div><div class="chart bars" id="${id}"><div class="bplot" style="height:${H}px">${ticks.map(v => `<div class="bgrid" style="bottom:${y(v)}%"><span>${short(v)}</span></div>`).join('')}${!two && I.avg > 0 ? `<div class="bavg" style="bottom:${y(I.avg)}%"></div>` : ''}<div class="bcols">${cols}</div></div></div>` +
+    `<div class="legend">${two ? `<span><i class="sq" style="background:var(--green)"></i>Money in</span><span><i class="sq" style="background:var(--accent)"></i>Money out</span>` : `<span><i class="dash"></i>Average of the whole months</span>`}${I.series.some(s => s.partial) ? `<span><i class="sq" style="background:${colors[0]};opacity:.4"></i>This month so far</span>` : ''}</div>`;
+}
+function mountBars(id, open) {
+  const c = charts[id], el = document.getElementById(id), r = document.getElementById(id + '-r'); if (!c || !el) return;
+  let shownI; // redraw only when the month shown changes, or a button under the pointer is replaced mid-click
+  const say = i => {
+    if (i === shownI) return; shownI = i;
+    el.querySelectorAll('.bcol').forEach(b => b.classList.toggle('on', i != null && +b.dataset.i === i));
+    if (i == null) { r.innerHTML = `<div class="when">${c.two ? 'Average a month' : 'Tap a month'}</div>` + (c.two ? `<span class="s">${money(c.bars.filter(s => !s.partial).reduce((a, s) => a + s.income - s.spend, 0) / Math.max(1, c.bars.filter(s => !s.partial).length), { sign: true })} kept</span>` : `<span class="s">Average ${money(c.avg)} a month</span>`); return; }
+    const s = c.bars[i], net = s.income - s.spend;
+    r.innerHTML = `<div class="when">${fMonth(s.month + '-01')}${s.partial ? ' so far' : ''}</div>` + (c.two ? `<span class="s"><i style="background:var(--green)"></i>In ${money(s.income)}</span><span class="s"><i style="background:var(--accent)"></i>Out ${money(s.spend)}</span><span class="s">${net >= 0 ? 'Kept' : 'Short'} ${money(Math.abs(net))}</span>` : `<span class="s">${money(s.v)}</span>${s.partial || !c.avg ? '' : `<span class="s sub">${money(s.v - c.avg, { sign: true })} against average</span>`}`) +
+      `<button class="linkbtn" data-act="push" data-arg="${esc(open(s.month))}">${s.count} transaction${s.count === 1 ? '' : 's'} ›</button>`;
+  };
+  // a tap picks a month (and a second tap on it lets go); with a mouse and nothing picked, hovering previews
+  let sel = null;
+  el.querySelectorAll('.bcol').forEach(b => {
+    b.addEventListener('click', () => { const i = +b.dataset.i; sel = sel === i ? null : i; shownI = undefined; say(sel); });
+    b.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse' && sel == null) say(+b.dataset.i); }); // once a month is picked, hover leaves it alone so its link can be reached
+  });
+  el.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') say(sel); });
+  say(null);
+}
+const insTxnsArg = q => 'txns:ins=' + encodeURIComponent(JSON.stringify(q));
+function vInsights(focusArg) {
+  if (!data.transactions.length) return { title: 'Spending insights', large: true, back: 'Plan', body: '<p class="note">Import a bank statement first.</p>' };
+  const st = insState(), measure = st.measure, W = insWindow(st.period), ctx = txCtx();
+  const focus = focusArg ? { by: focusArg.slice(0, focusArg.indexOf('=')), key: focusArg.slice(focusArg.indexOf('=') + 1) } : null;
+  const by = focus ? INS_NEXT[focus.by] : st.by;
+  const I = TXL.insights(ctx.categorised, { months: W.months, prevMonths: W.prevMonths, measure, by, account: st.account || null, focus, partial: W.partial });
+  const from = W.full[0], to = W.full.at(-1), noun = { spend: 'Spent', income: 'Money in', net: I.total < 0 ? 'Spent more than came in' : 'Kept' }[measure];
+  const txq = extra => insTxnsArg({ measure, account: st.account || null, from, to, ...(focus ? { by: focus.by, key: focus.key } : {}), ...extra });
+  const accs = [...new Set(data.transactions.map(t => t.account))].filter(acc);
+  const chips = (list, cur, act) => `<div class="chips">${list.map(([v, l]) => `<button class="${v === cur ? 'on' : ''}" data-act="${act}" data-arg="${esc(v)}">${esc(l)}</button>`).join('')}</div>`;
+  const good = v => (measure === 'spend' ? v <= 0 : v >= 0); // up is bad for spending, good for money in
+  const chg = (v, base) => (v == null ? '' : `<span class="${Math.abs(v) < 0.5 ? '' : good(v) ? 'pos' : 'neg'}">${money(v, { sign: true })}${pctTxt(v, base)}</span>`);
+  const want = { '3m': 3, '6m': 6, '12m': 12 }[st.period], nFull = W.full.length;
+  // say what the figures really cover: "last 6 months" over two months of statements would overstate it
+  const periodWord = want && nFull < want ? `the ${nFull} whole month${nFull === 1 ? '' : 's'} there are` : { '3m': 'last 3 months', '6m': 'last 6 months', '12m': 'last 12 months', ty: 'this tax year', all: 'all your statements' }[st.period];
+  const title = focus ? insKeyLabel(focus.by, focus.key) : 'Spending insights';
+  if (!W.full.length) return { title, large: true, back: 'Back', body: `${seg(INS_MEASURE, measure, 'ins-measure')}<p class="note">There is no whole month of transactions yet. Come back once a month has finished.</p>` };
+
+  const shown = st.all ? I.rows : I.rows.slice(0, 10);
+  const drillArg = r => (focus ? txq({ by2: by, key2: r.key }) : 'insights:' + by + '=' + r.key);
+  const spark = r => { if (r.byMonth.length < 3) return ''; const top = Math.max(1, ...r.byMonth.map(Math.abs)); return `<span class="spark" aria-hidden="true" style="width:${Math.min(12, r.byMonth.length) * 4}px">${r.byMonth.slice(-12).map(v => `<i style="height:${Math.max(6, Math.abs(v) / top * 100)}%"></i>`).join('')}</span>`; };
+  const breakdown = shown.map(r => row({
+    title: `${esc(insKeyLabel(by, r.key))}<div class="bar2"><i style="width:${(r.share * 100).toFixed(1)}%${measure !== 'spend' && r.total > 0 ? ';background:var(--green)' : ''}"></i></div>`,
+    sub: `${short(Math.abs(r.avg))} a month · ${r.count} · ${Math.round(r.share * 100)}%`,
+    value: `${spark(r)}${amt(measure === 'net' ? r.total : Math.abs(r.total), { color: measure === 'net', sign: measure === 'net' })}`, vsub: r.change != null ? chg(r.change, r.prev) : '',
+    act: 'push', arg: drillArg(r),
+  })).join('') + (I.rows.length > 10 ? row({ title: st.all ? 'Show the top 10' : `Show all ${I.rows.length}`, act: 'ins-all', cls: 'act-row', chev: false }) : '');
+  const mv = I.movers && (I.movers.up.length || I.movers.down.length) && measure !== 'net' ? group([...I.movers.up, ...I.movers.down].map(x => row({
+    title: `${esc(insKeyLabel(by, x.key))} ${x.delta > 0 ? '↑' : '↓'}`, sub: `${short(x.before)} → ${short(x.after)} a month`,
+    value: `<span class="${good(x.delta) ? 'pos' : 'neg'}">${money(x.delta, { sign: true })}</span>`, vsub: 'a month', act: 'push', arg: drillArg(x) })).join(''),
+    'What’s changing', 'The last three whole months against the three before. Only moves of at least £20 a month, and a tenth, are shown.') : '';
+  const big = I.biggest.length ? group(I.biggest.map(t => row({ title: esc(t.merchant || t.description), sub: `${fDate(t.date)} · ${esc(t.cat)} · ${esc(accName(t.account))}`, value: amt(t.amount, { sign: true, color: true, dp: true }), act: 'cat-tx', arg: t.id })).join(''), 'Largest') : '';
+
+  return {
+    title, large: true, back: focus ? 'Back' : 'Plan',
+    body: `${focus ? '' : seg(INS_MEASURE, measure, 'ins-measure')}
+      ${chips(INS_PERIOD, st.period, 'ins-period')}
+      ${accs.length > 1 ? chips([['', 'All accounts'], ...accs.map(id => [id, accName(id)])], st.account, 'ins-acct') : ''}
+      <div class="hero"><div class="cap">${esc(noun)}, ${esc(periodWord)}${focus ? '' : st.account ? ' · ' + esc(accName(st.account)) : ''}</div>
+        <div class="big amt${measure === 'net' && I.total < 0 ? ' neg' : ''}">${money(measure === 'net' ? I.total : Math.abs(I.total)).replace('£', '<span class="p">£</span>')}</div>
+        ${measure === 'net' ? `<div class="eq">In ${money(I.series.filter(x => !x.partial).reduce((a, x) => a + x.income, 0))} · out ${money(I.series.filter(x => !x.partial).reduce((a, x) => a + x.spend, 0))}</div>` : ''}
+        <div class="eq">${short(Math.abs(I.avg))} a month · ${I.count} transaction${I.count === 1 ? '' : 's'}${I.change != null ? ` · ${chg(I.change, I.prev)} on the ${W.full.length} month${W.full.length === 1 ? '' : 's'} before` : ''}</div></div>
+      <section class="card"><div class="gh">Month by month<b>${esc(fMonth(from + '-01', true))} – ${esc(fMonth(to + '-01', true))}</b></div>${insBars('c-ins', I, measure)}</section>
+      ${focus ? '' : seg(INS_BY, by, 'ins-by')}
+      ${breakdown ? group(breakdown, `By ${INS_BY.find(x => x[0] === by)[1].toLowerCase()}${focus ? '' : ''}`, focus ? 'Tap one to see its transactions.' : 'Tap one to look inside it. The small bars are its last months; the figure under the total is against the period before.') : '<p class="note">Nothing in this period.</p>'}
+      ${mv}${big}
+      ${group(row({ title: `All ${I.count} transactions`, act: 'push', arg: txq({}) }))}
+      <p class="note">${measure === 'spend' ? 'Spending is money out less refunds. Transfers between your own accounts, money in and anything marked “leave out” are not counted. ' : ''}Only imported accounts are included${W.gaps ? `; ${W.gaps} month${W.gaps === 1 ? '' : 's'} in this period ha${W.gaps === 1 ? 's' : 've'} no transactions at all` : ''}.</p>`,
+    after: () => mountBars('c-ins', m => txq({ from: m, to: m })),
   };
 }
 // Recalibration (1.7): the last three complete months of actual spending against plan, by category.
@@ -1977,20 +2094,21 @@ function updateSheet(date) {
   const last = latestSnapshot(data);
   const base = target || last;
   // Savings and cash ISAs can be left blank: they are then worked out from their interest rate
-  const est = id => { const b = balanceOn(data, id, todayISO()); return b ? b.v : null; };
+  const est = (id, d) => { const b = balanceOn(data, id, d || todayISO()); return b ? b.v : null; };
   const accs = data.accounts.filter(a => a.active || (target && target.balances[a.id] != null));
   const body = `<section class="group"><div class="list"><div class="field"><label for="u_date">Balances as at</label><input type="date" id="u_date" name="__date" value="${esc(date || todayISO())}"></div></div>
-    <div class="gf">${target ? 'You’re correcting an earlier update.' : 'Start from your last figures and change what’s moved. Using an existing date replaces that update.'}</div></section>` +
+    <div class="gf">${target ? 'You’re correcting an earlier update.' : 'Start from your last figures and change what’s moved. Using an existing date replaces that update.'} Untick an account to leave it out - nothing is recorded for it on this date, and it carries on being worked out from its own balances.</div></section>` +
     data.people.map(p => {
       const l = accs.filter(a => a.owner === p.id); if (!l.length) return '';
       return `<section class="group"><div class="gh">${esc(p.name)}</div><div class="list">${l.map(a => {
         const liab = LIAB.has(a.type), v = base?.balances[a.id], auto = !target && (a.type === 'savings' || a.type === 'cash_isa');
         const shown = v == null || auto ? '' : nf2.format(Math.abs(liab ? -v : v) === 0 ? 0 : (liab ? -v : v)).replace(/\.00$/, '');
-        const e = auto ? est(a.id) : null;
+        const e = est(a.id, date), on = !target || v != null || auto; // correcting: an account not in that update starts left out
+        const tip = `Include ${esc(a.name)} in this update`;
         const inv = (a.type === 'ss_isa' || a.type === 'pension') && (target ? snapsSorted().some(s => s.date < target.date) : !!last);
         const cv = target && target.contrib && target.contrib[a.id] != null ? String(target.contrib[a.id]) : '';
-        return `<div class="field"><label for="b_${a.id}">${esc(a.name)}<span class="sub" data-d="${a.id}">${liab ? 'Amount owed · ' : ''}last ${v == null ? '–' : money(liab ? Math.abs(v) : v)}</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="b_${a.id}" name="b_${a.id}" class="bal-in num" data-liab="${liab ? 1 : 0}" data-last="${v ?? ''}" data-est="${e ?? ''}" value="${esc(shown)}" placeholder="${e != null ? 'about ' + nf0.format(e) : '0'}" autocomplete="off"></span></div>` + (auto ? `<div class="gf" style="margin:-4px 0 6px">Leave blank to let Tally work it out at ${rateOn(a, date || todayISO())}%</div>` : '') +
-          (inv ? `<div class="field"><label for="c_${a.id}">Paid in since last update<span class="sub">So growth isn’t mistaken for money you put in</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="c_${a.id}" name="c_${a.id}" class="contrib-in num" value="${esc(cv)}" placeholder="0" autocomplete="off"></span></div>` : '');
+        return `<div class="field${on ? '' : ' out'}" data-row="${a.id}"><span class="tick"><input type="checkbox" class="inc" data-for="${a.id}" aria-label="${tip}" title="${tip}"${on ? ' checked' : ''}><span></span></span><label for="b_${a.id}">${esc(a.name)}<span class="sub" data-d="${a.id}">${liab ? 'Amount owed · ' : ''}last ${v == null ? '–' : money(liab ? Math.abs(v) : v)}</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="b_${a.id}" name="b_${a.id}" class="bal-in num" data-liab="${liab ? 1 : 0}" data-last="${v ?? ''}" data-est="${e ?? ''}" value="${esc(shown)}" placeholder="${auto && e != null ? 'about ' + nf0.format(e) : '0'}" autocomplete="off"${on ? '' : ' disabled'}></span></div>` + (auto ? `<div class="gf" style="margin:-4px 0 6px">Leave blank to let Tally work it out at ${rateOn(a, date || todayISO())}%</div>` : '') +
+          (inv ? `<div class="field"><label for="c_${a.id}">Paid in since last update<span class="sub">So growth isn’t mistaken for money you put in</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="c_${a.id}" name="c_${a.id}" class="contrib-in num" value="${esc(cv)}" placeholder="0" autocomplete="off"${on ? '' : ' disabled'}></span></div>` : '');
       }).join('')}</div></section>`;
     }).join('') + `<section class="group"><div class="list"><div class="field"><label>Net worth</label><span class="num" id="u_total" style="font-weight:600"></span></div></div></section>`;
   sheet({
@@ -1999,7 +2117,7 @@ function updateSheet(date) {
       const recalc = () => {
         let tot = 0;
         form.querySelectorAll('.bal-in').forEach(i => {
-          let n = parseNum(i.value); const liab = i.dataset.liab === '1'; if (n != null && liab) n = -Math.abs(n);
+          let n = i.disabled ? null : parseNum(i.value); const liab = i.dataset.liab === '1'; if (n != null && liab) n = -Math.abs(n);
           if (n != null) tot += n; else if (i.dataset.est !== '') tot += +i.dataset.est;
           const last = i.dataset.last === '' ? null : +i.dataset.last, id = i.name.slice(2), d = form.querySelector(`[data-d="${CSS.escape(id)}"]`);
           if (d) d.innerHTML = `${liab ? 'Amount owed · ' : ''}last ${last == null ? '–' : money(liab ? Math.abs(last) : last)}${n != null && last != null && Math.abs(n - last) > .5 ? ' · <span class="delta ' + (n > last ? 'up' : 'down') + '">' + money(liab ? Math.abs(n) - Math.abs(last) : n - last, { sign: true }) + '</span>' : ''}`;
@@ -2007,17 +2125,32 @@ function updateSheet(date) {
         form.querySelector('#u_total').textContent = money(tot);
       };
       form.addEventListener('input', recalc); recalc();
+      // what a blank or left-out account is worked out at follows the date chosen
+      form.elements.__date.addEventListener('change', () => {
+        const d = form.elements.__date.value; if (!d) return;
+        form.querySelectorAll('.bal-in').forEach(i => { const e = est(i.name.slice(2), d); i.dataset.est = e ?? ''; if (i.placeholder.startsWith('about') && e != null) i.placeholder = 'about ' + nf0.format(e); });
+        recalc();
+      });
+      form.querySelectorAll('.inc').forEach(c => c.addEventListener('change', () => {
+        const id = c.dataset.for, row = form.querySelector(`[data-row="${CSS.escape(id)}"]`), inp = form.querySelector(`#b_${CSS.escape(id)}`), ci = form.querySelector(`#c_${CSS.escape(id)}`);
+        row.classList.toggle('out', !c.checked); inp.disabled = !c.checked; if (ci) ci.disabled = !c.checked;
+        if (c.checked && !inp.value) inp.focus();
+        recalc();
+      }));
       form.querySelectorAll('.bal-in').forEach(i => i.addEventListener('focus', () => setTimeout(() => i.select(), 0)));
     },
     onDone: form => {
       const d = form.elements.__date.value; if (!d) { toast('Choose a date', true); return false; }
       const balances = {};
-      form.querySelectorAll('.bal-in').forEach(i => { let n = parseNum(i.value); if (n == null) return; if (i.dataset.liab === '1') n = -Math.abs(n); balances[i.name.slice(2)] = Math.round(n * 100) / 100; });
+      form.querySelectorAll('.bal-in').forEach(i => { if (i.disabled) return; let n = parseNum(i.value); if (n == null) return; if (i.dataset.liab === '1') n = -Math.abs(n); balances[i.name.slice(2)] = Math.round(n * 100) / 100; });
+      if (!Object.keys(balances).length) { toast('Nothing to save - every account is left out or blank', true); return false; }
       if (target && d !== date) data.snapshots = data.snapshots.filter(s => s.date !== date);
       const ex = data.snapshots.find(s => s.date === d);
       const contrib = {};
-      form.querySelectorAll('.contrib-in').forEach(i => { const n = parseNum(i.value); if (n) contrib[i.name.slice(2)] = Math.round(n * 100) / 100; });
-      const snap = ex || { date: d }; snap.balances = balances;
+      form.querySelectorAll('.contrib-in').forEach(i => { if (i.disabled) return; const n = parseNum(i.value); if (n) contrib[i.name.slice(2)] = Math.round(n * 100) / 100; });
+      // a left-out account keeps whatever is already recorded on that date (unless this is that update being corrected)
+      if (ex && ex !== target) form.querySelectorAll('.bal-in:disabled').forEach(i => { const id = i.name.slice(2); if (ex.balances[id] != null) balances[id] = ex.balances[id]; });
+      const snap = ex || { date: d }; snap.balances = balances; delete snap.source;
       if (Object.keys(contrib).length) snap.contrib = contrib; else delete snap.contrib;
       if (!ex) data.snapshots.push(snap);
       if (target) { const st = ui.stacks[ui.tab]; if (st.at(-1) === 'snap:' + date) st[st.length - 1] = 'snap:' + d; }
@@ -2185,7 +2318,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports, isayear: vIsaYear, goal: vGoal, risk: vRisk, checks: vChecks, rates: vMarket })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, insights: vInsights, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports, isayear: vIsaYear, goal: vGoal, risk: vRisk, checks: vChecks, rates: vMarket })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -2232,7 +2365,9 @@ const actions = {
   'add-bundle': templatePicker, 'edit-bundle': bundleSheet,
   'edit-remortgage': remortgageSheet, 'add-option': () => optionSheet(null), 'edit-option': optionSheet, 'edit-scplan': scenarioPlanSheet,
   'cmp-win': m => { ui.cmpWin = +m; render(); }, 'cal-month': calendarMonthSheet,
-  'csv-import': () => $('#csvIn').click(), 'act-range': r => { ui.actRange = r; render(); }, 'bank-cats': bankCatSheet,
+  'csv-import': () => $('#csvIn').click(), 'act-range': r => { ui.actRange = r; render(); },
+  'ins-measure': v => { insState().measure = v; render(); }, 'ins-period': v => { insState().period = v; render(); }, 'ins-by': v => { insState().by = v; insState().all = false; render(); },
+  'ins-acct': v => { insState().account = v; render(); }, 'ins-all': () => { insState().all = !insState().all; render(); }, 'bank-cats': bankCatSheet,
   'cat-tx': id => catSheet({ id }), recal: recalApply,
   real: () => { ui.real = !ui.real; render(); },
   'add-bal': id => balanceSheet(id, null), 'edit-bal': arg => { const [id, d] = arg.split('|'); balanceSheet(id, d); },

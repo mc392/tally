@@ -356,6 +356,30 @@ try {
   await page.waitForTimeout(500); // let the import sheet finish sliding away
   await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-actuals.png'), fullPage: true });
   ok(await page.evaluate(() => { const B = TallyTx.budgetVsActual(data, '2026-09', txCtx()); return document.querySelector('#main .hero').textContent.includes(money(B.actual - B.plan, { sign: true })); }), 'the headline is actual minus plan for September');
+  // spending insights: the headline and the chart come from TallyTx.insights over the whole months
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 }); await page.waitForTimeout(500);
+  await page.evaluate(() => { ui.ins = null; actions.push('insights'); });
+  await page.waitForSelector('#c-ins .bcol');
+  const ins = await page.evaluate(() => { const W = insWindow('6m'), I = TallyTx.insights(txCtx().categorised, { months: W.months, prevMonths: W.prevMonths, partial: W.partial });
+    return { I, W, totalTxt: money(I.total), hero: document.querySelector('#main .hero').textContent, bars: document.querySelectorAll('#c-ins .bcol').length, part: document.querySelectorAll('#c-ins .bcol.part').length }; });
+  ok(ins.W.full.join() === '2026-07,2026-08' && ins.W.partial === '2026-09', 'whole months are July and August; September is still running');
+  ok(ins.bars === 3 && ins.part === 1 && ins.hero.includes(ins.totalTxt), 'three bars, September faded, and the headline is the two whole months');
+  await page.click('#c-ins .bcol[data-i="1"]');
+  ok((await page.textContent('#c-ins-r')).includes('Aug 2026'), 'tapping a month says what it was');
+  await page.waitForTimeout(400); await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-insights.png'), fullPage: true });
+  await page.click('#c-ins-r .linkbtn');
+  await page.waitForFunction(() => document.querySelector('#main .subtitle')?.textContent.includes('Aug 2026'));
+  ok(await page.evaluate(n => document.querySelectorAll('#main .list .row').length === n, ins.I.series[1].count), 'and opens exactly that month’s transactions');
+  await page.evaluate(() => { ui.stacks[ui.tab].pop(); actions['ins-by']('merchant'); });
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('By shop'));
+  const topShop = ins.I && await page.evaluate(() => { const W = insWindow('6m'); return TallyTx.insights(txCtx().categorised, { months: W.months, partial: W.partial, by: 'merchant' }).rows[0].key; });
+  await page.click(`#main [data-arg="insights:merchant=${topShop}"]`);
+  await page.waitForFunction(t => document.querySelector('#main h1, #main .large, .title')?.textContent.includes(t) || document.title.includes(t) || document.body.textContent.includes('By category'), topShop);
+  ok((await page.textContent('#main')).includes('By category'), 'a shop opens its own page, split by category');
+  await page.evaluate(() => { ui.stacks[ui.tab].pop(); actions['ins-measure']('net'); });
+  await page.waitForFunction(() => document.querySelectorAll('#c-ins .bcol i').length === 6);
+  ok(true, 'in and out: two bars a month');
+  await page.evaluate(() => { ui.ins = null; ui.stacks[ui.tab].pop(); render(); });
   await page.evaluate(() => actions.push('recurring'));
   await page.waitForFunction(() => document.querySelector('#main').textContent.includes('Still going'));
   ok((await page.textContent('#main')).includes('STREAMFLIX PAYMENTS') && (await page.textContent('#main')).includes('Up £2.00'), 'recurring payments, with the price rise flagged');
@@ -454,8 +478,16 @@ try {
   await page.evaluate(() => actions.update());
   await page.waitForSelector('.sheet-wrap.open #b_sav');
   ok(await page.$eval('.sheet-wrap.open #b_sav', el => el.value === '' && el.placeholder.startsWith('about')), 'savings are left blank on a full update, showing the estimate');
-  await page.click('.sheet-wrap.open .cancel'); await page.waitForTimeout(400);
-  await page.evaluate(() => { data.snapshots = data.snapshots.filter(s => s.date !== '2026-11-20'); changed(); });
+  // untick the current account: nothing is recorded for it, and the others are saved
+  await page.fill('.sheet-wrap.open #u_date', '2026-10-15'); await page.dispatchEvent('.sheet-wrap.open #u_date', 'change');
+  await page.click('.sheet-wrap.open .inc[data-for="cur"]');
+  ok(await page.$eval('.sheet-wrap.open #b_cur', el => el.disabled && el.closest('.field').classList.contains('out')), 'unticking an account greys it out');
+  await page.fill('.sheet-wrap.open #b_isa', '101000');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.snapshots.some(s => s.date === '2026-10-15'));
+  ok(await page.evaluate(() => { const b = data.snapshots.find(s => s.date === '2026-10-15').balances; return !('cur' in b) && b.isa === 101000; }), 'a left-out account is not set on that date; the rest are');
+  await page.waitForTimeout(400);
+  await page.evaluate(() => { data.snapshots = data.snapshots.filter(s => s.date !== '2026-11-20' && s.date !== '2026-10-15'); changed(); });
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
   console.log('Account names and interest rates over time');
