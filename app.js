@@ -5,9 +5,9 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const framed = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
 
 let data = null;
-let meta = { fileName: null, dirty: false, savedAt: null, private: false };
+// base = writer mark of the file version this device last read or wrote (see storage.js)
+let meta = { fileName: null, dirty: false, savedAt: null, private: false, encrypt: false, base: null, conflict: false };
 const ui = { tab: 'home', stacks: { home: [], accounts: [], projection: [], plan: [] }, owner: 'all', scenario: null, horizon: null, anim: '' };
-let fileHandle = null; // desktop browsers only: write straight back to the opened file
 
 // ---------- formatting ----------
 const nf0 = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 0 });
@@ -88,65 +88,202 @@ function blankFile() {
 }
 
 // ---------- persistence (working copy on this device) ----------
+// The working copy is kept unencrypted in this browser's storage, protected by the device's own
+// lock. Encryption protects the FILE, which is the copy that leaves the device (iCloud, OneDrive).
 function persist() { try { localStorage.setItem(STORE, JSON.stringify({ data, meta })); } catch (e) { } }
 function restore() {
   try { const s = JSON.parse(localStorage.getItem(STORE) || 'null'); if (s && s.data) { data = normalise(s.data); Object.assign(meta, s.meta || {}); } } catch (e) { }
 }
-function changed(msg) { meta.dirty = true; persist(); render(); if (msg) toast(msg); }
+let edits = 0; // counts changes, so a change made while a save is being written isn't marked saved
+function changed(msg) { edits++; meta.dirty = true; persist(); render(); if (msg) toast(msg); autoSaveSoon(); }
 
-// ---------- file storage: your file, your cloud ----------
-function fileText() { data.savedAt = new Date().toISOString(); return JSON.stringify(data, null, 1); }
+// ---------- file storage: your file, your cloud (routes live in storage.js) ----------
+const TS = TallyStorage;
+const DEVICE = TS.device();
+let seal = null;        // key for the encrypted file, if there is one (kept in IndexedDB)
+let fileRoute = 'manual'; // 'live' = can write back without asking · 'reconnect' = needs one tap · 'manual'
+async function refreshRoute() { const r = await TS.route(); if (r !== fileRoute) { fileRoute = r; render(); } return r; }
 function suggestedName() { return meta.fileName || 'family-finances.json'; }
+const whenStr = iso => { if (!iso) return 'an unknown time'; const d = new Date(iso); return `${fDate(iso.slice(0, 10))} at ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 
-async function saveFile() {
-  const text = fileText(), name = suggestedName();
+// What the file holds: the data, plus the writer mark; sealed if encryption is on.
+async function fileText(fileWriter) {
+  const writer = TS.nextWriter(fileWriter, meta.base, DEVICE);
+  const body = Object.assign({}, data, { savedAt: writer.at });
+  delete body.writer;
+  const out = meta.encrypt && seal ? await TS.seal(body, seal, writer) : Object.assign(body, { writer });
+  return { text: JSON.stringify(out, null, 1), writer };
+}
+function parseFile(text) { try { return JSON.parse(text); } catch (e) { return null; } }
+
+let autoT = null, saving = false;
+function autoSaveSoon() {
+  if (fileRoute !== 'live' || meta.conflict) return;
+  clearTimeout(autoT); autoT = setTimeout(() => saveFile({ auto: true }), 1200);
+}
+
+async function saveFile(o = {}) {
+  if (saving) return; saving = true;
+  try { await saveFileInner(o); } finally { saving = false; }
+}
+async function saveFileInner({ auto = false, force = false } = {}) {
+  if (meta.encrypt && !seal) {
+    if (auto) return;
+    return toast('Set your passphrase again under Plan › Your data before saving', true);
+  }
   try {
-    // 1) Desktop Chrome/Edge: write straight back into the file you opened (e.g. in your OneDrive / iCloud Drive folder)
-    if (fileHandle && fileHandle.createWritable) {
-      const w = await fileHandle.createWritable(); await w.write(text); await w.close(); return saved('Saved to ' + fileHandle.name);
+    let r = await refreshRoute();
+    if (r === 'reconnect' && !auto) { await TS.permission(true); r = await refreshRoute(); }
+    if (r === 'live') {
+      // Read before writing: if another device saved since this one last looked, stop and ask.
+      const cur = parseFile((await TS.readHandle()).text);
+      const fw = cur && cur.writer;
+      if (!force && TS.isConflict(fw, meta.base)) { meta.conflict = true; persist(); render(); return auto ? null : conflictSheet(fw); }
+      const n = edits, { text, writer } = await fileText(fw);
+      await TS.writeHandle(text);
+      meta.base = writer; meta.conflict = false;
+      return saved(auto ? null : 'Saved to ' + TS.handle.name, n);
     }
-    // 2) Inside Claude: the platform's save prompt (share sheet on iPhone)
+    if (auto || r === 'reconnect') return;
+    // Manual routes. There is no way to read the file back first, so there is no conflict check here.
+    const n = edits, { text, writer } = await fileText(null), name = suggestedName();
+    const done = msg => { meta.base = writer; saved(msg, n); };
+    // Inside Claude: the platform's save prompt (share sheet on iPhone)
     if (window.claude && window.claude.use) {
       const dl = await Promise.race([window.claude.use('downloads'), new Promise(r => setTimeout(() => r(null), 1500))]);
-      if (dl) { await dl.save({ filename: name, data: text }); return saved('Saved ' + name); }
+      if (dl) { await dl.save({ filename: name, data: text }); return done('Saved ' + name); }
     }
-    // 3) iPhone / iPad: share sheet → "Save to Files" → iCloud Drive or OneDrive
+    // iPhone / iPad: share sheet → "Save to Files" → iCloud Drive or OneDrive
     const file = new File([text], name, { type: 'application/json' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return saved('Shared ' + name); }
-    // 4) Desktop fallback: pick a location
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return done('Shared ' + name); }
+    // Computer: pick a location once; from then on saves go straight back to it
     if (window.showSaveFilePicker && !framed) {
-      fileHandle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: 'Tally file', accept: { 'application/json': ['.json'] } }] });
-      meta.fileName = fileHandle.name; return saveFile();
+      await TS.setHandle(await window.showSaveFilePicker({ suggestedName: name, types: [{ description: 'Tally file', accept: { 'application/json': ['.json'] } }] }));
+      meta.fileName = TS.handle.name; meta.base = null; await refreshRoute(); return saveFileInner({ force: true });
     }
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000); saved('Downloaded ' + name);
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000); done('Downloaded ' + name);
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.code === 'declined')) return toast('Save cancelled', true);
     toast('Could not save: ' + (e.message || e.code || 'unknown error'), true);
   }
 }
-function saved(msg) { meta.dirty = false; meta.savedAt = new Date().toISOString(); persist(); render(); toast(msg); }
+function saved(msg, n = edits) {
+  meta.dirty = edits !== n; meta.savedAt = new Date().toISOString(); persist(); render(); if (msg) toast(msg);
+  if (meta.dirty) autoSaveSoon();
+}
+
+function conflictSheet(fw) {
+  const who = `${esc(fw.label || 'another device')} on ${esc(whenStr(fw.at))}`;
+  sheet({ title: 'File changed elsewhere', done: null, body: `
+    <p class="note">Your finance file was saved from ${who}, after this device last opened it. Saving now would replace those changes.</p>
+    <section class="group"><div class="list">
+      <button class="row act-row" data-sact="load"><div class="main"><div class="ttl">Load the newer file</div><div class="sub">Changes made here since your last save are discarded</div></div></button>
+      <button class="row act-row danger" data-sact="overwrite"><div class="main"><div class="ttl">Keep this version and overwrite</div><div class="sub">The changes from ${who} are lost</div></div></button>
+    </div></section>`,
+    onDone: async (form, close, act) => {
+      close();
+      if (act === 'load') { const f = await TS.readHandle(); meta.dirty = false; await loadText(f.text, f.name); }
+      if (act === 'overwrite') saveFile({ force: true });
+    } });
+}
+
+// Loads whatever the other device last saved, if nothing here is waiting to be saved.
+// Runs on start and whenever the app comes back to the front.
+async function syncFromFile() {
+  if (await refreshRoute() !== 'live') return;
+  try {
+    const f = await TS.readHandle(), cur = parseFile(f.text);
+    if (!cur || !TS.isConflict(cur.writer, meta.base)) return;
+    if (meta.dirty) { meta.conflict = true; persist(); render(); return; }
+    await loadText(f.text, f.name, { quiet: true });
+  } catch (e) { }
+}
 
 async function openFile() {
   if (window.showOpenFilePicker && !framed) {
     try {
       const [h] = await window.showOpenFilePicker({ types: [{ description: 'Tally file', accept: { 'application/json': ['.json'] } }] });
-      const f = await h.getFile(); fileHandle = h; return loadText(await f.text(), f.name);
+      const f = await h.getFile();
+      if (!(await loadText(await f.text(), f.name))) return;
+      await TS.setHandle(h); await refreshRoute(); return;
     } catch (e) { if (e.name === 'AbortError') return; }
   }
   $('#fileIn').click();
 }
 $('#fileIn').addEventListener('change', async e => {
-  const f = e.target.files[0]; if (!f) return; fileHandle = null;
-  loadText(await f.text(), f.name); e.target.value = '';
+  const f = e.target.files[0]; if (!f) return;
+  if (await loadText(await f.text(), f.name)) { await TS.setHandle(null); await refreshRoute(); }
+  e.target.value = '';
 });
-function loadText(text, name) {
-  let d; try { d = JSON.parse(text); } catch (e) { return toast('That file isn’t valid JSON', true); }
-  if (!d || !Array.isArray(d.accounts) || !Array.isArray(d.snapshots)) return toast('That isn’t a Tally file', true);
-  if (data && meta.dirty && !confirm('You have unsaved changes. Replace them with this file?')) return;
-  data = normalise(d); meta.fileName = name || meta.fileName; meta.dirty = false; meta.savedAt = d.savedAt || null;
+
+// Returns true if the file was loaded. quiet: a background refresh, so no questions and no prompts.
+async function loadText(text, name, { quiet = false } = {}) {
+  let d = parseFile(text);
+  if (!d) { if (!quiet) toast('That file isn’t valid JSON', true); return false; }
+  let s = null;
+  if (TS.isEncrypted(d)) {
+    const env = d;
+    if (TS.sealFits(env, seal)) { try { d = await TS.unseal(env, seal); s = seal; } catch (e) { } }
+    if (!s) {
+      if (quiet) return false;
+      let note = 'This file is encrypted. Enter the passphrase it was saved with.';
+      for (;;) {
+        const pass = await askPassphrase({ title: 'Unlock file', note, done: 'Unlock' });
+        if (pass == null) return false;
+        toast('Unlocking…');
+        try { const k = await TS.sealFor(pass, env); d = await TS.unseal(env, k); s = k; break; }
+        catch (e) { note = 'That passphrase didn’t open the file. Check it and try again.'; }
+      }
+    }
+    d.writer = env.writer;
+  }
+  if (!d || !Array.isArray(d.accounts) || !Array.isArray(d.snapshots)) { if (!quiet) toast('That isn’t a Tally file', true); return false; }
+  if (!quiet && data && meta.dirty && !confirm('You have unsaved changes. Replace them with this file?')) return false;
+  const writer = d.writer || null; delete d.writer;
+  data = normalise(d); meta.fileName = name || meta.fileName; meta.dirty = false; meta.conflict = false;
+  meta.savedAt = d.savedAt || null; meta.base = writer; meta.encrypt = !!s;
+  if (s) { seal = s; await TS.kvSet('seal', s); }
   ui.stacks = { home: [], accounts: [], projection: [], plan: [] }; ui.tab = 'home';
-  persist(); render(); toast('Opened ' + (name || 'file'));
+  persist(); render();
+  toast(quiet ? `Loaded the latest from ${writer && writer.label || 'your file'}` : 'Opened ' + (name || 'file'));
+  return true;
+}
+
+// ---------- encryption settings ----------
+function askPassphrase({ title, note, done = 'Save', confirm: twice = false }) {
+  return new Promise(resolve => {
+    let settled = false; const end = v => { if (!settled) { settled = true; resolve(v); } };
+    const field = (n, label, ac) => `<div class="field"><label for="p_${n}">${label}</label><input id="p_${n}" name="${n}" type="password" class="wide" autocomplete="${ac}" autocapitalize="off" spellcheck="false"></div>`;
+    const { form } = sheet({ title, done, body: `<p class="note">${note}</p><section class="group"><div class="list">${field('p1', 'Passphrase', twice ? 'new-password' : 'current-password')}${twice ? field('p2', 'Again', 'new-password') : ''}</div>${twice ? '<div class="gf">At least 10 characters. A few unrelated words is easier to remember than a jumble.</div>' : ''}</section>`,
+      onOpen: (f, close) => {
+        const w = f.closest('.sheet-wrap');
+        w.querySelector('.cancel').addEventListener('click', () => end(null));
+        w.addEventListener('click', e => { if (e.target === w) end(null); });
+        setTimeout(() => f.elements.p1.focus(), 350);
+      },
+      onDone: f => {
+        const p = f.elements.p1.value;
+        if (twice) {
+          if (p.length < 10) { toast('Use at least 10 characters', true); return false; }
+          if (p !== f.elements.p2.value) { toast('The two passphrases don’t match', true); return false; }
+        } else if (!p) return false;
+        end(p);
+      } });
+    return form;
+  });
+}
+async function encryptSheet() {
+  const pass = await askPassphrase({ title: meta.encrypt ? 'Change passphrase' : 'Encrypt your file', done: 'Encrypt', confirm: true,
+    note: 'Your finance file will be locked with this passphrase before it is saved, so iCloud, OneDrive or anyone who gets the file sees only scrambled data. <b>If you forget it, the file cannot be opened. There is no reset.</b> Keep it in your password manager.' });
+  if (pass == null) return;
+  toast('Setting up…');
+  seal = await TS.deriveSeal(pass); await TS.kvSet('seal', seal);
+  meta.encrypt = true; changed(fileRoute === 'live' ? 'Encryption on' : 'Encryption on. Save to update your file');
+}
+function decryptSheet() {
+  if (!confirm('Save your finance file unencrypted from now on? Anyone who can open the file will be able to read it.')) return;
+  meta.encrypt = false; changed('Encryption off');
 }
 
 // ---------- toast ----------
@@ -168,7 +305,7 @@ function row(o) {
 }
 const group = (rows, head, foot) => `<section class="group">${head ? `<div class="gh">${head}</div>` : ''}<div class="list">${rows}</div>${foot ? `<div class="gf">${foot}</div>` : ''}</section>`;
 const seg = (opts, cur, act) => `<div class="seg" role="tablist">${opts.map(([v, l]) => `<button role="tab" aria-selected="${v === cur}" class="${v === cur ? 'on' : ''}" data-act="${act}" data-arg="${v}">${l}</button>`).join('')}</div>`;
-const sw = (checked, act, arg) => `<span class="switch" onclick="event.stopPropagation()"><input type="checkbox" ${checked ? 'checked' : ''} data-chg="${act}" data-arg="${esc(arg)}" aria-label="Include"><span></span></span>`;
+const sw = (checked, act, arg) => `<span class="switch"><input type="checkbox" ${checked ? 'checked' : ''} data-chg="${act}" data-arg="${esc(arg)}" aria-label="Include"><span></span></span>`;
 
 // ---------- charts (SVG + HTML overlay, scrubbable) ----------
 const charts = {};
@@ -299,7 +436,9 @@ function vHome() {
 }
 
 function headerRight() {
-  const st = meta.dirty ? `<button class="pill warn" data-act="save">Save</button>` : '';
+  const st = meta.conflict ? `<button class="pill warn" data-act="resolve">File changed</button>`
+    : fileRoute === 'reconnect' ? `<button class="pill warn" data-act="reconnect">Reconnect</button>`
+    : meta.dirty && fileRoute !== 'live' ? `<button class="pill warn" data-act="save">Save</button>` : '';
   return `${st}<button class="iconbtn" data-act="private" aria-label="${meta.private ? 'Show amounts' : 'Hide amounts'}">${meta.private ? EYE_OFF : EYE}</button>`;
 }
 
@@ -512,16 +651,20 @@ function vPlan() {
       ${group(Object.entries(data.scenarios).map(([k, s]) => row({ title: esc(s.name) + (data.scenario === k ? '<span class="tag">Default</span>' : ''), sub: s.growth ? `S&S ${s.ssReturn}% · inflation ${s.inflation}% · pay ${s.payRise}%` : 'Growth off', act: 'push', arg: 'scenario:' + k })).join(''), 'Scenarios')}
       ${group(
         row({ title: 'Names', sub: data.people.map(p => esc(p.name)).join(', '), act: 'edit-people' }) +
-        row({ title: 'Finance file', sub: esc(meta.fileName || 'Not saved to a file yet'), value: meta.dirty ? '<span class="pill warn">Unsaved</span>' : meta.savedAt ? '<span class="pill ok">Saved</span>' : '', chev: false }) +
-        row({ title: 'Save to file', act: 'save', cls: 'act-row', chev: false }) +
+        row({ title: 'Finance file', sub: esc(meta.fileName || 'Not saved to a file yet'), value: meta.conflict ? '<span class="pill warn">Changed elsewhere</span>' : meta.dirty ? '<span class="pill warn">Unsaved</span>' : meta.savedAt ? '<span class="pill ok">Saved</span>' : '', chev: false }) +
+        row({ title: 'Encryption', sub: meta.encrypt ? 'Locked with your passphrase' : 'Off: anyone with the file can read it', value: meta.encrypt ? '<span class="pill ok">On</span>' : '<span class="pill">Off</span>', act: 'encrypt' }) +
+        (meta.encrypt ? row({ title: 'Turn encryption off', act: 'decrypt', cls: 'act-row', chev: false }) : '') +
+        (fileRoute === 'reconnect' ? row({ title: 'Reconnect to your file', act: 'reconnect', cls: 'act-row', chev: false }) : '') +
+        (fileRoute === 'live' ? '' : row({ title: 'Save to file', act: 'save', cls: 'act-row', chev: false })) +
         row({ title: 'Open a different file', act: 'open-file', cls: 'act-row', chev: false }) +
         row({ title: 'Paste file contents', act: 'paste', cls: 'act-row', chev: false }),
         'Your data', saveHelp())}`,
   };
 }
 function saveHelp() {
-  if (fileHandle) return 'Saves write straight back to the file you opened.';
-  return 'On iPhone, Save opens the share sheet: choose Save to Files, then your iCloud Drive or OneDrive folder, and replace the old copy. This device also keeps a working copy between saves.';
+  if (fileRoute === 'live') return `Changes save straight into ${esc(TS.handle.name)} as you make them. The file notes which device saved it last, so this device won’t overwrite changes made on another one.`;
+  if (fileRoute === 'reconnect') return 'Your browser asks once per visit before Tally can write to your file again. Tap Reconnect to carry on saving automatically.';
+  return 'On a computer in Chrome or Edge, open your file from your iCloud Drive or OneDrive folder and changes save into it automatically. On iPhone, Save opens the share sheet: choose Save to Files, then your iCloud Drive or OneDrive folder, and replace the old copy. This device also keeps a working copy between saves.';
 }
 
 function vSpending(cat) {
@@ -802,7 +945,10 @@ const actions = {
   back: () => { ui.stacks[ui.tab].pop(); ui.anim = 'pop-in'; render({ top: true }); },
   update: d => updateSheet(d || null),
   save: saveFile, 'open-file': openFile, paste: pasteSheet,
-  'new-file': () => { data = blankFile(); meta = { fileName: 'family-finances.json', dirty: true, savedAt: null, private: false }; persist(); render(); },
+  'new-file': async () => { data = blankFile(); meta = { fileName: 'family-finances.json', dirty: true, savedAt: null, private: false, encrypt: false, base: null, conflict: false }; await TS.setHandle(null); await refreshRoute(); persist(); render(); },
+  encrypt: encryptSheet, decrypt: decryptSheet,
+  reconnect: async () => { await TS.permission(true); if (await refreshRoute() !== 'live') return toast('Tally still can’t write to the file', true); await syncFromFile(); if (meta.dirty && !meta.conflict) saveFile(); else toast('Reconnected to ' + TS.handle.name); },
+  resolve: async () => { if (await refreshRoute() !== 'live') return toast('Reconnect to your file first', true); const cur = parseFile((await TS.readHandle()).text); if (cur && TS.isConflict(cur.writer, meta.base)) conflictSheet(cur.writer); else { meta.conflict = false; persist(); saveFile(); } },
   private: () => { meta.private = !meta.private; persist(); render(); },
   owner: o => { ui.owner = o; render(); },
   scenario: k => { ui.scenario = k; render(); },
@@ -821,6 +967,7 @@ const changes = {
   'sc-default': (k, on) => { if (on) { data.scenario = k; ui.scenario = k; changed(); } else render(); },
 };
 document.addEventListener('click', e => {
+  if (e.target.closest('.switch')) return; // a switch inside a tappable row shouldn't also open the row
   const b = e.target.closest('[data-act]'); if (!b || b.closest('.sheet')) return;
   const f = actions[b.dataset.act]; if (f) { e.preventDefault(); f(b.dataset.arg || undefined); }
 });
@@ -835,3 +982,11 @@ restore();
 if (!framed && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
 if (!framed) { const l = document.createElement('link'); l.rel = 'manifest'; l.href = 'manifest.webmanifest'; document.head.appendChild(l); }
 render();
+// Pick up the file connection and passphrase key this device kept, then fetch anything newer.
+(async () => {
+  seal = await TS.kvGet('seal');
+  if (!framed && window.showOpenFilePicker) await TS.restoreHandle();
+  await refreshRoute(); await syncFromFile();
+  if (meta.dirty && !meta.conflict) autoSaveSoon();
+})();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncFromFile(); });

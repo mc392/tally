@@ -8,6 +8,21 @@ Matt is new to software engineering but works in accounting/finance risk: explai
 - No build step, no framework: plain HTML/CSS/JS served by GitHub Pages. Keep it that way unless there's a strong reason.
 - iOS-native look: system font, inset grouped lists, large titles, bottom tab bar, bottom sheets. Main screen stays simple; detail lives one tap deeper.
 - `engine.js` is pure maths with no DOM access. Any change to projection logic must keep `node tests/engine.test.js` passing, or update the test with a written reason.
+- **Tally talks to no server but its own.** The Content-Security-Policy in `index.html` makes the browser enforce it. No inline scripts or `onclick=` attributes (the policy blocks them); no third-party scripts, fonts or APIs.
+
+## Storage (`storage.js`, Phase 1 - Sep 2026)
+All reading and writing of the finance file goes through `storage.js`; `app.js` asks it for a route and never touches a file API directly.
+- **Routes.** `live` = Chrome/Edge on a computer holding a file handle with permission: every `changed()` autosaves 1.2s later. `reconnect` = the handle survived a reload (it is kept in IndexedDB) but the browser wants one tap to grant write access again. `manual` = everything else (iPhone share sheet, download). Phase 2 adds a `native` route here for the iOS shell.
+- **Writer mark.** Every save stamps `writer {device, label, rev, at}` on the file; `meta.base` is the mark this device last read or wrote. Before a live write the file is read back, and `isConflict(fileWriter, base)` refuses to write over a mark it has not seen - the header shows *File changed* and the sheet offers load-theirs or overwrite. A file with no mark (older files) is never a conflict. Manual routes cannot read back, so they cannot check. `syncFromFile()` loads a newer file on start and when the app returns to the front, but only if nothing here is unsaved.
+- **Encryption.** Optional. AES-GCM-256, key from PBKDF2-SHA256 at 600,000 rounds, fresh 12-byte IV on every save, salt in the file. The envelope is `{app, format:"tally-encrypted", v, kdf, iv, ct, writer}` - the writer mark is outside the sealed part so a conflict is spotted without decrypting. The key is a **non-extractable** `CryptoKey` kept in IndexedDB (`seal`), so the passphrase is asked once per device. There is no recovery: a forgotten passphrase means an unreadable file, and the UI says so.
+- **The working copy on the device (localStorage `tally.v1`) is not encrypted.** Encryption protects the copy that leaves the device. Phase 3 may lock the working copy behind Face ID.
+- `edits` counts changes so one made while a save is in flight is not marked saved.
+
+## Tests
+- `node tests/engine.test.js` - projection maths against the spreadsheet.
+- `node tests/storage.test.js` - encryption round trip, wrong passphrase, tampering, IV reuse, conflict rules.
+- `node tests/browser.test.mjs` - the real app in headless Chromium (needs `npm i --no-save playwright`): live save, picking up another device's save, refusing to overwrite it, encryption on, reopening, unlocking on a new device, no CSP violations. Uses a fake file handle, never a real file.
+- `sw.js`'s `CACHE` must be bumped when a shell file is added or renamed.
 
 ## Data file shape (version 1)
 `people[]`, `accounts[] {id,name,owner,type,rate,active,note}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
@@ -20,9 +35,8 @@ Account types: ss_isa, cash_isa, savings, current, card, card_0, tax. Cash pool 
 Monthly: cash + surplus + one-off items. Above the cash floor → sweep into ISAs up to (new allowance + flexible re-deposit room). Below → withdraw from ISAs (cash ISAs first); withdrawals add re-deposit room for the rest of that tax year. Allowance resets each April. Growth optional per scenario.
 
 ## Roadmap (agreed next steps)
-1. **OneDrive auto-sync** via Microsoft Graph (free Azure app registration, PKCE sign-in, read/write one file in the app folder). Replaces the manual Save to Files step.
-2. **Trading 212 balances** via its official API. Needs a tiny proxy (e.g. Cloudflare Worker) so the API key isn't in the web page and to get around browser CORS limits.
+1. **Live save to iCloud Drive on iPhone** (agreed Sep 2026, replaces the earlier OneDrive/Graph plan). Phase 1 (done): `storage.js`, encryption, writer mark. Phase 2: a Capacitor iOS shell that loads this site from GitHub Pages (`server.url`, app-bound domains so the service worker works) plus one small Swift plugin - pick a folder once (security-scoped bookmark), read, write - exposed as a `native` route in `storage.js`. Built and signed ad hoc on GitHub Actions' macOS runners (no Mac, no TestFlight, no App Store Connect). Phase 3: Face ID for the passphrase via the Keychain; a bundled copy for offline starts. Pattern to copy: therapy-tracker's `GroundWorkRecordsFolder.swift`.
+2. **Trading 212 balances** via its official API. Needs a tiny proxy (e.g. Cloudflare Worker) so the API key isn't in the web page and to get around browser CORS limits. It will also need that proxy's one address added to `connect-src` in the CSP - add exactly that, never a wildcard.
 3. Per-person ISA allowances (£20k each) instead of a household figure.
 4. Pensions and property as optional net-worth lines.
 5. CSV import of past balances.
-6. iCloud auto-sync is only possible with a native iOS app (Swift, needs a Mac and Apple Developer account) — out of scope unless requested.

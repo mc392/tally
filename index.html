@@ -2,6 +2,9 @@
 <html lang="en-GB">
 <head>
 <meta charset="utf-8">
+<!-- Tally never talks to any server except the one it is loaded from. This rule makes the browser
+     enforce that: no script, request or form can reach anywhere else, even by mistake. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -224,6 +227,7 @@ textarea{width:100%; min-height:160px; border-radius:12px; border:0; padding:12p
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="fileIn" accept="application/json,.json,.tally" hidden>
 <script src="engine.js"></script>
+<script src="storage.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
