@@ -363,6 +363,53 @@ try {
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
   ok(await page.evaluate(async () => { const raw = window.__disk; return !raw.includes('BIG BANK') && !raw.includes('STREAMFLIX'); }), 'transactions are inside the encrypted file, not readable in it');
 
+  console.log('Analysis and risk');
+  await page.click('#tabbar [data-arg="projection"]'); await page.click('#tabbar [data-arg="projection"]');
+  await page.evaluate(() => { ui.scenario = 'base'; render(); });
+  const nomNet = await page.textContent('#main .stats');
+  await page.click('#main [data-act="real"]');
+  ok((await page.textContent('#main')).includes('today’s money') && (await page.textContent('#main .stats')) !== nomNet, 'today’s money changes the projected figures');
+  await page.click('#main [data-act="real"]');
+  await page.click('#main [data-act="push"][data-arg="isayear"]');
+  ok((await page.textContent('#main')).includes('Planned by 5 April') && (await page.textContent('#main')).includes('Partner'), 'ISA allowance this tax year, per person');
+  await page.click('#navL [data-act="back"]');
+  await page.click('#main [data-act="push"][data-arg="risk"]');
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('What the range says'), null, { timeout: 30000 });
+  const riskText = await page.textContent('#main');
+  ok(riskText.includes('Chance cash drops below your floor') && !!(await page.$('#c-fan')), '2,000 futures run in the background, with a fan chart');
+  ok((await page.$$('#main .group')).length >= 2 && riskText.includes('Markets fall 25% next month') && riskText.includes('The biggest income stops for 6 months'), 'stress tests listed');
+  ok(await page.evaluate(() => ui.mc.res.paths === 2000), 'the full 2,000 paths ran (in the worker)');
+  await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-risk.png'), fullPage: true });
+  // goals
+  await page.click('#tabbar [data-arg="plan"]'); await page.click('#tabbar [data-arg="plan"]');
+  await page.click('#main [data-act="edit-goal"]');
+  await page.waitForSelector('.sheet-wrap.open #f_target');
+  await page.fill('.sheet-wrap.open #f_name', 'Overpayment pot'); await page.fill('.sheet-wrap.open #f_target', '50000'); await page.fill('.sheet-wrap.open #f_date', '2027-06');
+  await page.click('.sheet-wrap.open #f_a_isa');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.goals.length === 1);
+  ok(await page.evaluate(() => data.goals[0].accounts.join() === 'isa' && data.goals[0].date === '2027-06'), 'a goal is saved with its accounts');
+  ok((await page.textContent('#main')).includes('Overpayment pot'), 'goals listed on Plan');
+  await page.click('#main [data-act="push"][data-arg^="goal:"]');
+  ok((await page.textContent('#main')).includes('Projected by Jun 2027'), 'the goal’s page');
+  // balance update with money paid in
+  await page.evaluate(() => { ui.stacks[ui.tab] = []; actions.update(); });
+  await page.waitForSelector('.sheet-wrap.open #c_isa');
+  await page.fill('.sheet-wrap.open #u_date', '2026-12-01');
+  await page.fill('.sheet-wrap.open #b_isa', '101000'); await page.fill('.sheet-wrap.open #c_isa', '1000');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.snapshots.some(s => s.date === '2026-12-01'));
+  ok(await page.evaluate(() => data.snapshots.find(s => s.date === '2026-12-01').contrib.isa === 1000), 'what was paid in is saved with the update');
+  await page.evaluate(() => actions.push('snap:2026-12-01'));
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('Where the change came from'));
+  ok(await page.evaluate(() => { const X = TallyAnalysis.attribution(data, '2026-09-01', '2026-12-01'); return Math.abs(X.growth - (101000 - 98765 - 1000)) < 0.01 && document.querySelector('#main').textContent.includes(money(X.growth, { sign: true })); }), 'growth shown after taking off what was paid in');
+  await page.evaluate(() => { data.snapshots = data.snapshots.filter(x => x.date !== '2026-12-01'); ui.stacks[ui.tab] = []; changed(); });
+  // reminder file
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.evaluate(() => downloadReminder())]);
+  const ics = fs.readFileSync(await dl.path(), 'utf8');
+  ok(dl.suggestedFilename() === 'tally-balance-reminder.ics' && ics.includes('RRULE:FREQ=MONTHLY;BYMONTHDAY=1') && ics.includes('\r\n'), 'monthly reminder calendar file');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
   console.log('Newer files');
   const refused = await page.evaluate(async () => { const f = JSON.stringify({ app: 'tally', version: TallyModel.VERSION + 1, accounts: [], snapshots: [] }); return await loadText(f, 'future.json'); });
   ok(refused === false && await page.evaluate(() => data.bundles.length === 1), 'a file from a newer Tally is refused, and nothing is replaced');

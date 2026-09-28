@@ -28,13 +28,14 @@ All reading and writing of the finance file goes through `storage.js`; `app.js` 
 - `node tests/options.test.js` - annuity to the penny, overpayments against an independent month-by-month amortisation, fee added accrues interest, household = amortise, comparison = each scenario on its own, per-scenario events and option.
 - `node tests/calendar.test.js` - a month set by hand replaces that month only with no inflation, scale applies to it, plan vs actual.
 - `node tests/transactions.test.js` - both bank formats and their quirks, duplicates, column mapping, categories and rules, transfers, budget vs actual, recalibration and recurring, all worked by hand from `tests/fixtures/*-sample.csv`.
+- `node tests/analysis.test.js` - today's money, the ISA year, goals, attribution adding up exactly, each stress test's effect, and the simulation (seeded, collapses to the projection with no volatility, a spread in line with 15% volatility).
 - `node tests/storage.test.js` - encryption round trip, wrong passphrase, tampering, IV reuse, conflict rules.
 - `node tests/browser.test.mjs` - the real app in headless Chromium (needs `npm i --no-save playwright`): live save, picking up another device's save, refusing to overwrite it, encryption on, reopening, unlocking on a new device, no CSP violations. Uses a fake file handle, never a real file.
 - `sw.js`'s `CACHE` must be bumped when a shell file is added or renamed.
 
-## Data file shape (version 7, Sep 2026)
+## Data file shape (version 8, Sep 2026)
 `model.js` owns the shape: `TallyModel.migrate()` upgrades any older file on open (`normalise()` calls it first), and the file on disk only changes when it is next saved. `engine.js` only ever sees the current version. **A change to the shape means bumping `VERSION`, adding a step to `migrate()`, and a test in `tests/migration.test.js`.**
-`people[]`, `accounts[] {id,name,owner,type,rate,active,note,access?,noticeDays?,maturity?,flexible?}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
+`people[]`, `accounts[] {id,name,owner,type,rate,active,note,access?,noticeDays?,maturity?,flexible?}`, `snapshots[] {date, balances{accountId: amount}, contrib?{accountId: £ paid in since the update before}}` (liabilities negative; contrib: v8), `goals[] {id,name,target,date,accounts[]}` (v8),
 `flows[] {id,name,kind:'income'|'spend'|'oneoff',amount,start,end,category,owner,inflates,growth,bundle,on,linked?,settles?,overrides?{'YYYY-MM':£}}` (overrides: v6), `bufferPct`,
 `bundles[] {id,name,template,start,on,scale,contingency}` (v3, life events),
 `remortgageOptions[] {id,partId,name,type,rate,fixMonths,fee,feeAdded,lump,regular,capPct,termMonths,afterRate}` (v5),
@@ -62,6 +63,16 @@ Account types: ss_isa, cash_isa, savings, current, pension, card, card_0, tax. C
 - `compareOptions()` runs "Do nothing" (the part's own rate after the fix) and each deal for the earliest-fixing part through `projectAs()` - the household projection with scenario settings changed, never touching `data` - so every figure on Compare deals is what that scenario would show on its own.
 - **A scenario is a whole plan (1.6):** assumptions + `bundles` (per-scenario on/off, absent = the event's own switch; `TallyModel.bundleOn`) + `option` + `rateShift` (added to tracker rates and rates after a new fix only - never to an existing part's own reversion rate, so existing figures do not move). `effectiveFlows(data, sc)` takes the scenario.
 - Compare plans overlays up to three scenarios: net worth, cash, and `availableSeries()` (available to overpay if the switch were that month), with a difference table at the fix end, +1 and +3 years.
+
+## Analysis and risk (Phases 3-4, Sep 2026)
+`analysis.js` (`TallyAnalysis`) is pure, built on `engine.js`, and tested in node.
+- **Where the change came from (3.1)** - `attribution(data, date1, date2)` puts every account's change in one of four piles that **add up to the change in net worth exactly**: growth (S&S ISAs and pensions, less `snapshots[].contrib` paid in, which the update sheet now asks for), interest (savings and cash ISAs: average balance × rate × time, an estimate), debt (0% cards and tax owed going down), and money put in (the rest; paying a debt from cash shows here as negative and under debt as positive, netting to nothing). Per investment account a Modified Dietz money-weighted return, annualised. Shown on each balance update's page.
+- **Goals (3.2)** - `goalStatus()`: accounts the projection tracks on their own (`rows[].accounts`, added for this) are read directly; pooled ones (cash, instant cash ISAs, S&S) take their share of the pool by today's balances. On track, when reached, extra a month needed (simple, no growth). Goal dates are dashed green lines on the projection chart.
+- **ISA tax year (3.3)** - `isaYear()`: per person, allowance, paid in (as entered in Rules), planned by 5 April (from the projection's `freshBy`), left unused; re-deposit room separately. `nudge` in February and March shows a chip on Overview.
+- **Today's money (3.4)** - `realValue()` deflates by the scenario's inflation compounded monthly from the projection start. A display toggle on Projection; nothing stored.
+- **Range of outcomes (4.1)** - `monteCarlo()`: 2,000 paths, monthly S&S returns drawn normally around the scenario's return (0 when growth is off) with `vol` % a year, passed to `project()` as `opts.ssReturns` (used instead of the scenario's S&S return). **Seeded** (mulberry32 + Box-Muller), so it is testable and repeatable; with no volatility every path equals the ordinary projection - there is a test. It runs in `mc-worker.js` (a Web Worker; falls back to 500 paths on the main thread if workers are unavailable). Cash and savings rates are not varied.
+- **Stress tests (4.2)** - `STRESSES` / `stressed()`: markets −25% next month (`opts.ssShock`, and the update's S&S balance scaled for readiness), no bonus (one-off money in and income named "bonus" removed), rates +2% at the remortgage (every part's rate after its fix and the scenario's `rateShift`), the biggest income stops for 6 months (month overrides of 0), a £10k cost next month. Each reports floor breaches, lowest cash and the change in available to overpay.
+- **Balance reminders (5.5)** - a calendar file (`reminderICS()`, RFC 5545, CRLF line ends) with a monthly event on the 1st and a 9am alert. No server.
 
 ## Bank statements (Phase 2, Sep 2026)
 `transactions.js` (`TallyTx`) is pure and tested in node. Amounts are from the **account's** point of view: − = money out.

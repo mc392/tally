@@ -111,7 +111,9 @@ function monthlyBudget(data, when) {
   return { income, spend, buffer, out: spend + buffer, surplus: income - spend - buffer };
 }
 
-function project(data, scenarioKey, months) {
+// opts (for the risk tools, Phase 4): ssReturns - one monthly S&S return (0.01 = 1%) per month, used
+// INSTEAD of the scenario's return, whether or not growth is on; ssShock - % change to S&S in the first month.
+function project(data, scenarioKey, months, opts = {}) {
   const sc = data.scenarios[scenarioKey || data.scenario];
   const snap = latestSnapshot(data);
   if (!snap) return null;
@@ -203,6 +205,7 @@ function project(data, scenarioKey, months) {
     return t;
   };
 
+  if (opts.ssShock) isaSS *= 1 + opts.ssShock / 100; // e.g. markets −25% next month
   for (let i = 0; i < months; i++) {
     const k = k0 + i;
     const date = keyToDate(k);
@@ -295,10 +298,11 @@ function project(data, scenarioKey, months) {
     cash = before - topUp + withdraw;
 
     let growth = 0;
+    if (opts.ssReturns) { const g = isaSS * opts.ssReturns[i]; isaSS += g; growth += g; }
     if (sc.growth) {
-      const gSS = isaSS * (sc.ssReturn || 0) / 100 / 12;
+      const gSS = opts.ssReturns ? 0 : isaSS * (sc.ssReturn || 0) / 100 / 12;
       const gC = isaCash * cashIsaRate / 100 / 12;
-      isaSS += gSS; isaCash += gC; growth = gSS + gC;
+      isaSS += gSS; isaCash += gC; growth += gSS + gC;
       for (const id in heldIsa) { const g = heldIsa[id] * (+byId[id].rate || 0) / 100 / 12; heldIsa[id] += g; growth += g; }
       for (const a of accs) if (other[a.id] != null && (a.type === 'savings' || a.type === 'pension')) {
         const g = other[a.id] * (+a.rate || 0) / 100 / 12; other[a.id] += g; growth += g;
@@ -318,6 +322,7 @@ function project(data, scenarioKey, months) {
       freshStart, replStart, cap, freshEnd: fresh, freshBy: { ...freshBy }, replEnd: repl, taxYear: tyNow,
       isaSS, isaCash: isaCash + heldTotal, isaCashFlex: isaCash, isa: isaSS + isaCash + heldTotal, growth, other: otherTotal,
       byAccess, earmark: sumBy(earmarkBy), earmarkBy,
+      accounts: { ...other, ...heldIsa }, // month-end balance of each account tracked on its own (savings, pensions, debts, fixed/notice cash ISAs)
       mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgageParts: mParts, dealCash,
       net: cash + isaSS + isaCash + heldTotal + otherTotal,
     });

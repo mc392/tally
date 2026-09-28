@@ -272,6 +272,8 @@ The period up to the remortgage decision needs the most accuracy.
 ## Phase 3: Analysis views
 
 ### 3.1 Where the net worth change came from
+
+> **Status: done (28 Sep 2026).** Contributions to S&S ISAs and pensions are entered on the balance update (no investment-account transactions yet). Interest is estimated from each account's rate.
 - Between any two balance updates, split the change into:
   - contributions (net money in)
   - investment growth (market movement)
@@ -280,16 +282,22 @@ The period up to the remortgage decision needs the most accuracy.
 - Show a money-weighted return per investment account, using contributions from transactions where they're available, or entered manually otherwise.
 
 ### 3.2 Goals
+
+> **Status: done.**
 - A goal has a target amount, a date, and which accounts count towards it.
 - Show on track / behind, the projected date it's reached, and the extra monthly saving needed.
 - Goals appear as markers on the projection chart.
 
 ### 3.3 Tax-year view
+
+> **Status: done.**
 - ISA usage per person for the current tax year, with what's left.
 - A nudge in February and March if allowance is going unused, alongside how much the projection plans to use.
 - Flexible ISA re-deposit room shown separately.
 
 ### 3.4 Real-terms toggle
+
+> **Status: done**, on the Projection screen.
 - Switch any projection into today's money, using the scenario's inflation rate.
 
 ---
@@ -297,6 +305,8 @@ The period up to the remortgage decision needs the most accuracy.
 ## Phase 4: Risk and uncertainty
 
 ### 4.1 Range of outcomes (Monte Carlo)
+
+> **Status: done (28 Sep 2026)**, in a Web Worker, seeded. Cash rates are not varied yet.
 - Run around 2,000 simulated paths, drawing monthly S&S returns from a distribution with the scenario's mean and a volatility setting (default 15% a year). Cash rates can optionally vary too.
 - A fan chart shows the 10th, 50th and 90th percentiles.
 - Key figures:
@@ -306,6 +316,8 @@ The period up to the remortgage decision needs the most accuracy.
 - Run the simulation in a Web Worker, so the screen stays responsive.
 
 ### 4.2 Named stress tests
+
+> **Status: done**, all five.
 - One-tap shocks on top of any scenario:
   - markets −25% next month
   - no bonus
@@ -337,6 +349,8 @@ The original 5.1 text, kept for the record:
 - Test whether Enable Banking's free restricted mode covers Matt's UK banks before building anything. If it doesn't, stay with CSV import.
 
 ### 5.5 Balance reminders
+
+> **Status: done**, as a calendar file.
 - An optional reminder at the start of each month to update balances, created in the iPhone Reminders app or as a calendar file. No server needed.
 
 ---

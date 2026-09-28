@@ -355,7 +355,7 @@ const sw = (checked, act, arg) => `<span class="switch"><input type="checkbox" $
 
 // ---------- charts (SVG + HTML overlay, scrubbable) ----------
 const charts = {};
-function chart(id, { series, height = 170, fmt = short, floor = null, markers = [], bands = [] }) {
+function chart(id, { series, height = 170, fmt = short, floor = null, markers = [], bands = [], lines = [] }) {
   const all = series.flatMap(s => s.pts);
   if (all.length < 2) return `<div class="note">Add at least two balance updates to see a trend.</div>`;
   const t0 = Math.min(...all.map(p => p.t)), t1 = Math.max(...all.map(p => p.t));
@@ -375,6 +375,7 @@ function chart(id, { series, height = 170, fmt = short, floor = null, markers = 
     if (s.fill) svg += `<path d="${path(s.pts)}L${X(s.pts.at(-1).t)},${H}L${X(s.pts[0].t)},${H}Z" fill="${s.color}" opacity=".08"/>`;
     svg += `<path d="${path(s.pts)}" fill="none" stroke="${s.color}" stroke-width="${s.w || 2.2}" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" ${s.dash ? 'stroke-dasharray="5 5"' : ''}/>`;
   }
+  for (const l of lines) { const x = X(l.t); if (x >= 0 && x <= W) svg += `<line x1="${x}" x2="${x}" y1="0" y2="${H}" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"><title>${esc(l.name)}</title></line>`; }
   for (const m of markers) svg += `<line x1="${X(m.t)}" x2="${X(m.t)}" y1="${H - 7}" y2="${H}" stroke="${m.v < 0 ? 'var(--red)' : 'var(--green)'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`;
   svg += '</svg>';
   const yl = ticks.map(v => `<div class="yl" style="top:${(Y(v) / H * 100).toFixed(2)}%">${fmt(v)}</div>`).join('');
@@ -475,6 +476,7 @@ function vHome() {
       (nextEv ? row({ title: 'Next big item', sub: `${esc(nextEv.name)} · ${fMonth(nextEv.start)}`, value: amt(nextEv.amount, { color: true, sign: true }), act: 'push', arg: 'events' }) : ''),
       `Looking ahead<b>${esc(sc.name)} scenario</b>`)}
     ${data.transactions.length ? group(actualsLine(), 'Actual spending') : ''}
+    ${isaNudge()}
     ${group(
       row({ title: 'Coming in', value: amt(bud.income), act: 'tab', arg: 'plan' }) +
       row({ title: 'Going out', value: amt(-bud.out), act: 'tab', arg: 'plan' }) +
@@ -594,7 +596,7 @@ function vSnap(date) {
   return {
     title: fDate(date), large: true, back: 'History',
     body: `<div class="hero"><div class="cap">Net worth</div><div class="big amt">${money(T.net).replace('£', '<span class="p">£</span>')}</div></div>
-      ${driftGroup(dr)}${rows}${group(row({ title: 'Edit these balances', act: 'update', arg: date, cls: 'act-row', chev: false }) + row({ title: 'Delete this update', act: 'del-snap', arg: date, cls: 'act-row danger', chev: false }))}`,
+      ${attributionGroup(date)}${driftGroup(dr)}${rows}${group(row({ title: 'Edit these balances', act: 'update', arg: date, cls: 'act-row', chev: false }) + row({ title: 'Delete this update', act: 'del-snap', arg: date, cls: 'act-row danger', chev: false }))}`,
   };
 }
 
@@ -604,10 +606,13 @@ function vProjection() {
   if (!pr) return { title: 'Projection', large: true, body: `<p class="note">Record your balances first — the projection starts from your latest update.</p><button class="cta" data-act="update">${PLUS}Update balances</button>` };
   const R = pr.rows, end = R.at(-1), first = snapshotTotals(data, latestSnapshot(data));
   const tFirst = Date.parse(pr.snapDate);
-  const pts = f => [{ t: tFirst, v: f === 'net' ? first.net : f === 'isa' ? first.isa : first.cash }, ...R.map(r => ({ t: monthEndT(r.date), v: f === 'net' ? r.net : f === 'isa' ? r.isa : r.closing }))];
+  // Today's money (3.4): every projected figure deflated by the scenario's inflation
+  const k0 = R[0].k, rv = (v, r) => ui.real ? TA.realValue(v, r.k, k0, sc.inflation) : v;
+  const pts = f => [{ t: tFirst, v: f === 'net' ? first.net : f === 'isa' ? first.isa : first.cash }, ...R.map(r => ({ t: monthEndT(r.date), v: rv(f === 'net' ? r.net : f === 'isa' ? r.isa : r.closing, r) }))];
+  const goalLines = data.goals.map(g => ({ t: monthEndT(g.date + '-01'), name: `${g.name}: ${money(g.target)}` }));
   const markers = R.flatMap(r => r.events.map(e => ({ t: monthEndT(r.date), v: e.amount })));
   const bands = bundleBands(tFirst, monthEndT(end.date));
-  const c1 = chart('c-proj', { series: [{ name: 'Net worth', color: 'var(--c-net)', pts: pts('net') }, { name: 'ISAs', color: 'var(--c-isa)', pts: pts('isa'), fill: true }].map((x, i) => i ? x : { ...x, whenLabel: `End of ${fMonth(end.date)}` }), height: 180, markers, bands });
+  const c1 = chart('c-proj', { series: [{ name: 'Net worth', color: 'var(--c-net)', pts: pts('net') }, { name: 'ISAs', color: 'var(--c-isa)', pts: pts('isa'), fill: true }].map((x, i) => i ? x : { ...x, whenLabel: `End of ${fMonth(end.date)}` }), height: 180, markers, bands, lines: goalLines });
   const c2 = chart('c-cash', { series: [{ name: 'Cash', color: 'var(--c-cash)', pts: pts('cash'), fill: true, whenLabel: `End of ${fMonth(end.date)}` }], height: 120, floor: +data.rules.cashFloor, markers, bands });
   const tops = R.reduce((s, r) => s + r.topUp, 0), wds = R.reduce((s, r) => s + r.withdraw, 0), growth = R.reduce((s, r) => s + r.growth, 0);
   const lowest = R.reduce((b, r) => r.closing < b.closing ? r : b, R[0]);
@@ -624,13 +629,14 @@ function vProjection() {
   return {
     title: 'Projection', large: true,
     body: `${seg(Object.entries(data.scenarios).map(([k, v]) => [k, esc(v.name)]), sk, 'scenario')}
-      <div class="chips">${[[18, '18 months'], [36, '3 years'], [60, '5 years'], [120, '10 years']].map(([n, l]) => `<button class="${n === horizon() ? 'on' : ''}" data-act="horizon" data-arg="${n}">${l}</button>`).join('')}</div>
+      <div class="chips">${[[18, '18 months'], [36, '3 years'], [60, '5 years'], [120, '10 years']].map(([n, l]) => `<button class="${n === horizon() ? 'on' : ''}" data-act="horizon" data-arg="${n}">${l}</button>`).join('')}<button class="${ui.real ? 'on' : ''}" data-act="real" aria-pressed="${!!ui.real}">Today’s money</button></div>
+      ${ui.real ? `<p class="note">Shown in today’s money: each figure is reduced by ${sc.inflation}% a year of inflation, so a pound later buys what it would today.</p>` : ''}
       <section class="card"><div class="gh">Net worth and ISAs<b>from ${fDate(pr.snapDate)}</b></div>${c1}
         <div class="legend"><span><i style="background:var(--c-net)"></i>Net worth</span><span><i style="background:var(--c-isa)"></i>ISAs</span><span><i style="background:var(--red)"></i>Payment</span><span><i style="background:var(--green)"></i>Receipt</span>${bands.length ? '<span><i style="background:var(--accent);opacity:.3"></i>Life events</span>' : ''}</div></section>
       <section class="card"><div class="gh">Cash held<b>floor ${amt(+data.rules.cashFloor)}</b></div>${c2}</section>
       <div class="stats">
-        <div><div class="k">Net worth</div><div class="v amt">${short(end.net)}</div><div class="n">${fMonth(end.date)} · ${chg(end.net - first.net)}</div></div>
-        <div><div class="k">ISA pot</div><div class="v amt">${short(end.isa)}</div><div class="n">${chg(end.isa - first.isa)}</div></div>
+        <div><div class="k">Net worth</div><div class="v amt">${short(rv(end.net, end))}</div><div class="n">${fMonth(end.date)} · ${chg(end.net - first.net)}</div></div>
+        <div><div class="k">ISA pot</div><div class="v amt">${short(rv(end.isa, end))}</div><div class="n">${chg(end.isa - first.isa)}</div></div>
         <div><div class="k">Moved into ISAs</div><div class="v amt">${short(tops)}</div><div class="n">${short(wds)} drawn back out</div></div>
         <div><div class="k">Lowest cash</div><div class="v amt ${lowest.closing < data.rules.cashFloor - 1 ? 'neg' : ''}">${short(lowest.closing)}</div><div class="n">${fMonth(lowest.date)}</div></div>
         ${sc.growth ? `<div><div class="k">Growth and interest</div><div class="v amt">${short(growth)}</div><div class="n">S&amp;S ${sc.ssReturn}% · cash ISA ${pr.cashIsaRate.toFixed(1)}%</div></div>` : `<div><div class="k">Growth and interest</div><div class="v">Off</div><div class="n">Excluded to stay prudent</div></div>`}
@@ -639,7 +645,7 @@ function vProjection() {
       ${short_.length ? group(short_.map(r => row({ title: fMonth(r.date), sub: 'ISAs can’t cover the floor', value: amt(-r.shortfall, { color: true }), act: 'push', arg: 'month:' + r.k })).join(''), 'Shortfalls') : ''}
       ${group(Object.entries(tys).map(([y, t]) => row({ title: `${y}/${String(+y + 1).slice(2)}`, sub: `In ${short(t.in)} · out ${short(t.out)}`, value: amt(t.left), vsub: 'allowance left' })).join(''), 'ISA allowance by tax year', `Uses ${money(data.rules.isaPerPerson)} each for ${esc(data.rules.isaFillOrder.map(person).join(' and '))}, filling ${esc(person(data.rules.isaFillOrder[0]))}’s first. Money taken out of a flexible ISA can be put back in the same tax year without using new allowance; the projection tracks that separately.`)}
       ${group(months, 'Month by month', 'Tap a month for the full cash waterfall and ISA workings.')}
-      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Compare plans', sub: 'Two or three scenarios side by side', act: 'push', arg: 'plans' }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
+      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Compare plans', sub: 'Two or three scenarios side by side', act: 'push', arg: 'plans' }) + row({ title: 'Range of outcomes and stress tests', sub: 'What markets, rates or a lost income could do', act: 'push', arg: 'risk' }) + row({ title: 'ISA allowance this tax year', sub: 'Per person, with what’s planned by 5 April', act: 'push', arg: 'isayear' }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
     after: () => { mountChart('c-proj'); mountChart('c-cash'); },
   };
 }
@@ -730,6 +736,7 @@ function vPlan() {
       ${group(inc + row({ title: 'Add income', act: 'add-income', cls: 'act-row', chev: false }), 'Income (monthly, after tax)')}
       ${group(Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => row({ title: esc(c), value: amt(v), vsub: `${short(v * 12)} a year`, act: 'push', arg: 'spending:' + c })).join('') +
         row({ title: 'Buffer for the unexpected', value: `${data.bufferPct}%`, act: 'edit-buffer' }) + row({ title: 'Add spending', act: 'add-spend', cls: 'act-row', chev: false }), 'Spending (monthly)')}
+      ${goalsGroup()}
       ${statementsGroup()}
       ${group(data.bundles.map(bundleRow).join('') + row({ title: 'Add a life event', act: 'add-bundle', cls: 'act-row', chev: false }), 'Life events', data.bundles.length ? 'Each event is a set of dated lines you can switch on or off, move or scale as one.' : 'A baby, a move, a renovation, a car, a big trip or time off work, as a set of dated costs and income changes you can switch on and off.')}
       ${group(
@@ -749,6 +756,7 @@ function vPlan() {
         (meta.encrypt ? row({ title: 'Turn encryption off', act: 'decrypt', cls: 'act-row', chev: false }) : '') +
         (fileRoute === 'reconnect' ? row({ title: 'Reconnect to your file', act: 'reconnect', cls: 'act-row', chev: false }) : '') +
         (fileRoute === 'live' ? '' : row({ title: 'Save to file', act: 'save', cls: 'act-row', chev: false })) +
+        row({ title: 'Monthly reminder to update balances', sub: 'Adds a repeating reminder to your calendar', act: 'reminder', cls: 'act-row', chev: false }) +
         row({ title: 'Open a different file', act: 'open-file', cls: 'act-row', chev: false }) +
         row({ title: 'Paste file contents', act: 'paste', cls: 'act-row', chev: false }),
         'Your data', saveHelp())}`,
@@ -1009,6 +1017,147 @@ function vRecurring() {
       ${group(list(live), 'Still going', 'Found from payments to the same place at a steady rhythm and a similar amount. New, price rises and ones that seem to have stopped are flagged.')}
       ${gone.length ? group(list(gone), 'Seem to have stopped', 'No payment for well over its usual gap.') : ''}` : '<p class="note">None found yet. Import a few months of statements.</p>',
   };
+}
+
+const TA = TallyAnalysis;
+
+// ---------- ISA tax year (3.3) ----------
+function vIsaYear() {
+  const Y = TA.isaYear(data, scenarioKey(), thisMonth());
+  if (!Y) return { title: 'ISA allowance', large: true, back: 'Projection', body: '<p class="note">Add your balances first.</p>' };
+  const ty = `${Y.taxYear}/${String(Y.taxYear + 1).slice(2)}`;
+  return {
+    title: `ISAs ${ty}`, large: true, back: 'Projection',
+    body: Y.people.map(p => group(
+      row({ title: 'Allowance', value: amt(p.allowance) }) + row({ title: 'Paid in so far', sub: 'As entered under Plan › Rules', value: amt(p.used), act: 'edit-rules' }) +
+      row({ title: 'Planned by 5 April', sub: 'Top-ups the projection makes', value: amt(p.planned) }) + row({ title: 'Left unused', value: amt(p.left), cls: 'total' }), esc(person(p.person)))).join('') +
+      group(row({ title: 'Re-deposit room at the end of March', sub: 'Money taken out of a flexible ISA this year that can go back in without using allowance', value: amt(Y.redeposit) })) +
+      `<p class="note">Allowance fills ${esc(person(data.rules.isaFillOrder[0]))}’s first. Unused allowance does not carry over into the next tax year.</p>`,
+  };
+}
+function isaNudge() {
+  const Y = data.snapshots.length && TA.isaYear(data, data.scenario || 'cautious', thisMonth());
+  if (!Y || !Y.nudge) return '';
+  const left = Y.people.filter(p => p.left > 0.5);
+  return `<div class="warnchip" role="status"><div><b>ISA allowance going unused</b><br>${left.map(p => `${esc(person(p.person))} ${money(p.left)}`).join(', ')} left before 5 April on current plans. Unused allowance is lost.</div><button data-act="push" data-arg="isayear">See</button></div>`;
+}
+
+// ---------- goals (3.2) ----------
+function goalsGroup() {
+  const sk = scenarioKey();
+  return group(data.goals.map(g => { const st = TA.goalStatus(data, sk, g, thisMonth()); return row({ title: esc(g.name), sub: st ? `${money(g.target)} by ${fMonth(g.date + '-01')} · ${st.onTrack ? 'on track' : `${short(st.shortfall)} short${st.reached ? `, reached ${fMonth(st.reached)}` : ''}`}` : '', value: st ? `<span class="pill ${st.onTrack ? 'ok' : 'warn'}">${st.onTrack ? 'On track' : 'Behind'}</span>` : '', act: 'push', arg: 'goal:' + g.id }); }).join('') +
+    row({ title: 'Add a goal', act: 'edit-goal', cls: 'act-row', chev: false }), 'Goals', data.goals.length ? '' : 'A target amount by a date, from the accounts you choose, e.g. an overpayment pot by the fix end.');
+}
+function vGoal(id) {
+  const g = data.goals.find(x => x.id === id); if (!g) { ui.stacks[ui.tab].pop(); return currentView(); }
+  const st = TA.goalStatus(data, scenarioKey(), g, thisMonth());
+  return {
+    title: g.name, large: true, back: 'Plan', right: `<button class="pill" data-act="edit-goal" data-arg="${esc(id)}" style="color:var(--accent)">Edit</button>`,
+    body: `<div class="hero"><div class="cap">${money(g.target)} by ${fMonth(g.date + '-01')}</div><div class="big amt">${Math.round(st.progress * 100)}<span class="p">%</span></div><div class="eq">${money(st.now)} there today</div></div>
+      ${group(row({ title: `Projected by ${fMonth(g.date + '-01')}`, value: amt(st.atDate) }) +
+        row({ title: st.onTrack ? 'On track' : 'Short by', value: st.onTrack ? '<span class="pill ok">On track</span>' : amt(-st.shortfall, { color: true }) }) +
+        (st.onTrack ? '' : row({ title: 'Extra to save each month', sub: 'On top of what the plan already puts in, to get there on time', value: amt(st.extraPerMonth) })) +
+        row({ title: 'Reached', value: st.reached ? fMonth(st.reached) : 'Not within 10 years' }), esc(data.scenarios[scenarioKey()].name) + ' scenario')}
+      ${group(g.accounts.map(aid => row({ title: esc(accName(aid)), value: amt(+(latestSnapshot(data)?.balances[aid] || 0)) })).join(''), 'Counts towards it')}
+      <p class="note">Accounts the projection pools together (cash, instant cash ISAs, S&amp;S ISAs) take their share of the pool by today’s balances.</p>`,
+  };
+}
+function goalSheet(id) {
+  const g = id ? data.goals.find(x => x.id === id) : { name: '', target: null, date: TM.shiftMonth(thisMonth(), 12), accounts: [] };
+  const vals = { name: g.name, target: g.target, date: g.date };
+  const eligible = data.accounts.filter(a => !TM.LIABILITIES.has(a.type) && a.active !== false);
+  eligible.forEach(a => { vals['a_' + a.id] = g.accounts.includes(a.id); });
+  formSheet({
+    title: id ? g.name : 'New goal', values: vals,
+    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text', ph: 'e.g. Overpayment pot' }, { key: 'target', label: 'Target', type: 'money' }, { key: 'date', label: 'By', type: 'month' }] },
+      { head: 'Which accounts count', fields: eligible.map(a => ({ key: 'a_' + a.id, label: a.name, type: 'toggle' })) }],
+    extra: id ? destructive('Delete goal', 'delete') : '',
+    onSave: (v, act) => {
+      if (act === 'delete') { data.goals = data.goals.filter(x => x.id !== id); if (ui.stacks[ui.tab].at(-1) === 'goal:' + id) ui.stacks[ui.tab].pop(); return changed('Goal deleted'); }
+      const accounts = eligible.filter(a => v['a_' + a.id]).map(a => a.id);
+      if (!(v.target > 0) || !v.date || !accounts.length) { toast('Set a target, a month and at least one account', true); return false; }
+      const rec = { name: v.name || 'Goal', target: v.target, date: v.date, accounts };
+      if (id) Object.assign(g, rec); else data.goals.push({ id: uid('goal'), ...rec });
+      changed('Goal saved');
+    },
+  });
+}
+
+// ---------- where the change came from (3.1) ----------
+function attributionGroup(date) {
+  const prev = snapsSorted().filter(s => s.date < date).at(-1); if (!prev) return '';
+  const X = TA.attribution(data, prev.date, date); if (!X) return '';
+  const inv = X.accounts.filter(a => a.return != null);
+  return group(
+    row({ title: 'Money put in', sub: 'Saved into accounts, less anything used to pay off debt', value: amt(X.saved, { sign: true, color: true }) }) +
+    row({ title: 'Investment growth', sub: 'S&S ISAs and pensions, after what you paid in', value: amt(X.growth, { sign: true, color: true }) }) +
+    row({ title: 'Interest', sub: 'Estimated from each account’s rate', value: amt(X.interest, { sign: true, color: true }) }) +
+    row({ title: 'Debt paid off', sub: '0% cards and tax owed', value: amt(X.debt, { sign: true, color: true }) }) +
+    row({ title: 'Change in net worth', value: amt(X.change, { sign: true, color: true }), cls: 'total' }),
+    `Where the change came from<b>since ${fDate(prev.date)}</b>`, inv.length ? inv.map(a => `${esc(a.name)}: ${(a.return * 100).toFixed(1)}%${X.days > 60 ? ` (${(a.annual * 100).toFixed(1)}% a year)` : ''}${a.paidIn ? ` after ${money(a.paidIn)} paid in` : ''}`).join(' · ') + '. Returns are money-weighted: what you paid in counts from halfway through.' : 'Enter what you paid into S&S ISAs and pensions when you update balances, to separate growth from money put in.');
+}
+
+// ---------- range of outcomes and stress tests (Phase 4) ----------
+let mcWorker = null, mcSeq = 0;
+function runMC(opts, done) {
+  const id = ++mcSeq, payload = { id, data: JSON.parse(JSON.stringify(data)), sk: scenarioKey(), opts };
+  if (!framed && window.Worker) {
+    try {
+      mcWorker ||= new Worker('mc-worker.js');
+      mcWorker.onmessage = e => { if (e.data.id === mcSeq) done(e.data.error ? null : e.data.result, e.data.error); };
+      return mcWorker.postMessage(payload);
+    } catch (e) { }
+  }
+  setTimeout(() => { try { done(TA.monteCarlo(payload.data, payload.sk, { ...opts, paths: Math.min(opts.paths, 500) })); } catch (e) { done(null, e.message); } }, 30);
+}
+function vRisk() {
+  const sk = scenarioKey(), sc = data.scenarios[sk], H = Math.max(horizon(), 36), vol = ui.mcVol || 15;
+  if (!latestSnapshot(data)) return { title: 'Range of outcomes', large: true, back: 'Projection', body: '<p class="note">Add your balances first.</p>' };
+  const R = readyNow(), target = data.rules.remortgage.target;
+  const key = `${edits}|${sk}|${H}|${vol}`;
+  if (!ui.mc || ui.mc.key !== key) {
+    ui.mc = { key, running: true };
+    runMC({ paths: 2000, vol, months: H, seed: 1, target, today: thisMonth() }, (res, err) => { if (ui.mc && ui.mc.key === key) { ui.mc = { key, res, err }; if (ui.stacks[ui.tab].at(-1) === 'risk') render(); } });
+  }
+  const M = ui.mc.res;
+  let fan = '<p class="note">Working out 2,000 possible futures…</p>';
+  if (M) {
+    const pts = f => M.band.map((b, i) => ({ t: monthEndT(M.dates[i]), v: b[f] }));
+    fan = chart('c-fan', { series: [{ name: 'Best 10%', color: 'var(--c-isa)', pts: pts('p90'), dash: true }, { name: 'Middle', color: 'var(--c-net)', pts: pts('p50') }, { name: 'Worst 10%', color: 'var(--red)', pts: pts('p10'), dash: true }], height: 160 });
+  } else if (ui.mc.err) fan = `<p class="note">Couldn’t run the simulation: ${esc(ui.mc.err)}</p>`;
+  const stressRows = Object.keys(TA.STRESSES).map(k => {
+    const S = TA.stressed(data, sk, k, H, thisMonth());
+    const d = S.after.available != null && S.base.available != null ? S.after.available - S.base.available : null;
+    return row({ title: esc(S.name), sub: [S.blurb ? esc(S.blurb) : '', S.detail ? esc(S.detail) : '', S.after.breaches ? `<span class="neg">cash below the floor in ${S.after.breaches} month${S.after.breaches === 1 ? '' : 's'}</span>` : 'cash floor holds', S.after.invested != null && S.base.invested - S.after.invested > 50 ? `S&amp;S ${short(S.base.invested - S.after.invested)} lower at the fix end${k === 'markets' ? '' : ' (sold to keep cash at the floor)'}` : '', `lowest cash ${short(S.after.lowest)}`].filter(Boolean).join(' · '),
+      value: d != null ? amt(d, { sign: true, color: true }) : amt(S.after.net - S.base.net, { sign: true, color: true }), vsub: d != null ? 'free at fix end' : `net worth in ${H / 12} years` });
+  }).join('');
+  return {
+    title: 'Range of outcomes', large: true, back: 'Projection',
+    body: `<div class="chips">${[10, 15, 20].map(v => `<button class="${v === vol ? 'on' : ''}" data-act="mc-vol" data-arg="${v}">${v}% volatility</button>`).join('')}</div>
+      <section class="card"><div class="gh">Net worth, 2,000 possible futures<b>${esc(sc.name)}</b></div>${fan}</section>
+      ${M ? group(
+        row({ title: `Net worth in ${H / 12} years`, sub: `Worst 10% ${short(M.end.p10)} · best 10% ${short(M.end.p90)}`, value: amt(M.end.p50), vsub: 'middle' }) +
+        row({ title: 'Chance cash drops below your floor', sub: 'In any month, because ISAs run out', value: `${Math.round(M.pBreach * 100)}%` }) +
+        (M.available ? row({ title: 'Free to overpay at the fix end', sub: `Worst 10% ${short(M.available.p10)} · best 10% ${short(M.available.p90)}`, value: amt(M.available.p50), vsub: 'middle' }) : '') +
+        (M.pBelowTarget != null ? row({ title: `Chance of missing your ${short(M.target)} target`, value: `${Math.round(M.pBelowTarget * 100)}%` }) : ''),
+        'What the range says', `S&S returns drawn at random each month around ${sc.growth ? sc.ssReturn : 0}% a year, with ${vol}% a year of ups and downs. Cash and savings rates are held at their rates. It shows spread, not a forecast.`) : ''}
+      ${group(stressRows, 'Stress tests', R ? 'Each one on top of the plan as it stands. The figure is the change in what’s free to overpay at your next fix end.' : 'Each one on top of the plan as it stands.')}`,
+    after: () => M && mountChart('c-fan'),
+  };
+}
+
+// ---------- balance reminders (5.5) ----------
+// A calendar file with a monthly reminder on the 1st - no server, no account. Opening it adds it to Calendar.
+function reminderICS() {
+  const d = new Date(), y = d.getFullYear(), m = d.getMonth() + 2 > 12 ? 1 : d.getMonth() + 2, yy = m === 1 ? y + 1 : y;
+  const day = `${yy}${String(m).padStart(2, '0')}01`, stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tally//Balance reminder//EN', 'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
+    `UID:tally-balance-reminder-${stamp}@tally`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${day}`, 'RRULE:FREQ=MONTHLY;BYMONTHDAY=1',
+    'SUMMARY:Update balances in Tally', 'DESCRIPTION:Open Tally and add this month’s balances.', 'BEGIN:VALARM', 'TRIGGER:PT9H', 'ACTION:DISPLAY', 'DESCRIPTION:Update balances in Tally', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
+}
+function downloadReminder() {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([reminderICS()], { type: 'text/calendar' })); a.download = 'tally-balance-reminder.ics'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000); toast('Open the file to add the reminder to your calendar');
 }
 
 // ---------- cash-flow calendar (Phase 1.7) ----------
@@ -1432,7 +1581,10 @@ function updateSheet(date) {
       return `<section class="group"><div class="gh">${esc(p.name)}</div><div class="list">${l.map(a => {
         const liab = LIAB.has(a.type), v = base?.balances[a.id];
         const shown = v == null ? '' : nf2.format(Math.abs(liab ? -v : v) === 0 ? 0 : (liab ? -v : v)).replace(/\.00$/, '');
-        return `<div class="field"><label for="b_${a.id}">${esc(a.name)}<span class="sub" data-d="${a.id}">${liab ? 'Amount owed · ' : ''}last ${v == null ? '–' : money(liab ? Math.abs(v) : v)}</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="b_${a.id}" name="b_${a.id}" class="bal-in num" data-liab="${liab ? 1 : 0}" data-last="${v ?? ''}" value="${esc(shown)}" placeholder="0" autocomplete="off"></span></div>`;
+        const inv = (a.type === 'ss_isa' || a.type === 'pension') && (target ? snapsSorted().some(s => s.date < target.date) : !!last);
+        const cv = target && target.contrib && target.contrib[a.id] != null ? String(target.contrib[a.id]) : '';
+        return `<div class="field"><label for="b_${a.id}">${esc(a.name)}<span class="sub" data-d="${a.id}">${liab ? 'Amount owed · ' : ''}last ${v == null ? '–' : money(liab ? Math.abs(v) : v)}</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="b_${a.id}" name="b_${a.id}" class="bal-in num" data-liab="${liab ? 1 : 0}" data-last="${v ?? ''}" value="${esc(shown)}" placeholder="0" autocomplete="off"></span></div>` +
+          (inv ? `<div class="field"><label for="c_${a.id}">Paid in since last update<span class="sub">So growth isn’t mistaken for money you put in</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="c_${a.id}" name="c_${a.id}" class="contrib-in num" value="${esc(cv)}" placeholder="0" autocomplete="off"></span></div>` : '');
       }).join('')}</div></section>`;
     }).join('') + `<section class="group"><div class="list"><div class="field"><label>Net worth</label><span class="num" id="u_total" style="font-weight:600"></span></div></div></section>`;
   sheet({
@@ -1457,7 +1609,11 @@ function updateSheet(date) {
       form.querySelectorAll('.bal-in').forEach(i => { let n = parseNum(i.value); if (n == null) return; if (i.dataset.liab === '1') n = -Math.abs(n); balances[i.name.slice(2)] = Math.round(n * 100) / 100; });
       if (target && d !== date) data.snapshots = data.snapshots.filter(s => s.date !== date);
       const ex = data.snapshots.find(s => s.date === d);
-      if (ex) ex.balances = balances; else data.snapshots.push({ date: d, balances });
+      const contrib = {};
+      form.querySelectorAll('.contrib-in').forEach(i => { const n = parseNum(i.value); if (n) contrib[i.name.slice(2)] = Math.round(n * 100) / 100; });
+      const snap = ex || { date: d }; snap.balances = balances;
+      if (Object.keys(contrib).length) snap.contrib = contrib; else delete snap.contrib;
+      if (!ex) data.snapshots.push(snap);
       if (target) { const st = ui.stacks[ui.tab]; if (st.at(-1) === 'snap:' + date) st[st.length - 1] = 'snap:' + d; }
       changed(`Balances saved for ${fDate(d)}`);
     },
@@ -1622,7 +1778,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports, isayear: vIsaYear, goal: vGoal, risk: vRisk })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -1670,7 +1826,8 @@ const actions = {
   'edit-remortgage': remortgageSheet, 'add-option': () => optionSheet(null), 'edit-option': optionSheet, 'edit-scplan': scenarioPlanSheet,
   'cmp-win': m => { ui.cmpWin = +m; render(); }, 'cal-month': calendarMonthSheet,
   'csv-import': () => $('#csvIn').click(), 'act-range': r => { ui.actRange = r; render(); }, 'bank-cats': bankCatSheet,
-  'cat-tx': id => catSheet({ id }), recal: recalApply, 'edit-rule': id => ruleSheet(id || null),
+  'cat-tx': id => catSheet({ id }), recal: recalApply,
+  real: () => { ui.real = !ui.real; render(); }, 'edit-goal': id => goalSheet(id || null), 'mc-vol': v => { ui.mcVol = +v; render(); }, reminder: downloadReminder, 'edit-rule': id => ruleSheet(id || null),
   'undo-import': id => { const i = data.imports.find(x => x.id === id); if (!i || !confirm(`Remove the ${i.count} transactions this import added?`)) return; data.transactions = data.transactions.filter(t => t.batch !== id); data.imports = data.imports.filter(x => x.id !== id); changed('Import removed'); },
   'cmp-sc': k => { const cur = (ui.cmpSc || Object.keys(data.scenarios)).filter(x => data.scenarios[x]); ui.cmpSc = cur.includes(k) ? (cur.length > 1 ? cur.filter(x => x !== k) : cur) : [...cur, k].slice(-3); render(); }, 'leak-ok': () => { ui.leak = null; render(); },
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
