@@ -316,6 +316,53 @@ try {
   await page.evaluate(() => { data.snapshots = data.snapshots.filter(x => x.date !== '2026-12-01'); ui.stacks[ui.tab].pop(); changed(); });
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
+  console.log('Bank statements');
+  await page.evaluate(() => { data.accounts.push({ id: 'amex', name: 'Test Amex', owner: 'M', type: 'card', rate: 0, active: true }); changed(); });
+  await page.click('#tabbar [data-arg="plan"]'); await page.click('#tabbar [data-arg="plan"]');
+  await page.setInputFiles('#csvIn', path.join(root, 'tests/fixtures/lloyds-sample.csv'));
+  await page.waitForSelector('.sheet-wrap.open #f_account');
+  ok((await page.textContent('.sheet-wrap.open')).includes('Lloyds · 25 transactions'), 'the Lloyds file is recognised');
+  ok(await page.$eval('.sheet-wrap.open #f_account', el => el.value) === 'cur', 'a current account is suggested for a bank statement');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.transactions.length === 25);
+  ok((await page.textContent('#main')).includes('Uncategorised'), 'after importing, it goes straight to sorting out what’s uncategorised');
+  await page.setInputFiles('#csvIn', path.join(root, 'tests/fixtures/amex-sample.csv'));
+  await page.waitForSelector('.sheet-wrap.open #f_account');
+  ok(await page.$eval('.sheet-wrap.open #f_account', el => el.value) === 'amex', 'the card is suggested for an Amex file');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.transactions.length === 32);
+  ok(await page.evaluate(() => { const C = TallyTx.categorised(data); return C.filter(t => t.cat === 'Transfer').length === 2; }), 'paying the card from the current account is matched as a transfer');
+  // sort out one shop: every transaction from it, via a rule
+  await page.evaluate(() => actions['cat-tx'](data.transactions.find(t => t.description === 'BIG BANK MORTGAGE').id));
+  await page.waitForSelector('.sheet-wrap.open #f_cat');
+  await page.selectOption('.sheet-wrap.open #f_cat', 'Home');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.categoryRules.length === 1);
+  ok(await page.evaluate(() => TallyTx.categorised(data).filter(t => t.merchant === 'BIG BANK MORTGAGE').every(t => t.cat === 'Home') && data.categoryRules[0].contains === 'BIG BANK MORTGAGE'), 'one choice sorts all three mortgage payments and makes a rule');
+  // the same file again adds nothing
+  await page.setInputFiles('#csvIn', path.join(root, 'tests/fixtures/lloyds-sample.csv'));
+  await page.waitForSelector('.sheet-wrap.open #f_account'); await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.imports.length === 3);
+  ok(await page.evaluate(() => data.transactions.length === 32 && data.imports.at(-1).count === 0), 'importing the same statement again adds nothing');
+  await page.evaluate(() => { ui.actRange = '2026-09'; actions.push('actuals'); });
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('By category'));
+  const act = await page.textContent('#main');
+  ok(act.includes('Home') && act.includes('plan'), 'budget vs actual by category');
+  // the sample covers Jul-Sep 2026; with the real clock in Sep 2026 the complete months are Jul and Aug only, so no suggestions yet
+  ok(await page.evaluate(() => { const R = recalibration(); return R === null || Array.isArray(R.rows); }), 'recalibration only speaks with three complete months');
+  await page.waitForTimeout(500); // let the import sheet finish sliding away
+  await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-actuals.png'), fullPage: true });
+  ok(await page.evaluate(() => { const B = TallyTx.budgetVsActual(data, '2026-09', txCtx()); return document.querySelector('#main .hero').textContent.includes(money(B.actual - B.plan, { sign: true })); }), 'the headline is actual minus plan for September');
+  await page.evaluate(() => actions.push('recurring'));
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('Still going'));
+  ok((await page.textContent('#main')).includes('STREAMFLIX PAYMENTS') && (await page.textContent('#main')).includes('Up £2.00'), 'recurring payments, with the price rise flagged');
+  await page.click('#tabbar [data-arg="home"]'); await page.click('#tabbar [data-arg="home"]');
+  ok((await page.textContent('#main')).includes('Sep 2026:') && (await page.textContent('#main')).includes('plan'), 'Overview carries one line for the latest month');
+  await page.evaluate(() => actions['undo-import'] && (window.confirm = () => true) && actions['undo-import'](data.imports[1].id));
+  ok(await page.evaluate(() => data.transactions.length === 25 && !data.transactions.some(t => t.account === 'amex')), 'an import can be removed as a whole');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+  ok(await page.evaluate(async () => { const raw = window.__disk; return !raw.includes('BIG BANK') && !raw.includes('STREAMFLIX'); }), 'transactions are inside the encrypted file, not readable in it');
+
   console.log('Newer files');
   const refused = await page.evaluate(async () => { const f = JSON.stringify({ app: 'tally', version: TallyModel.VERSION + 1, accounts: [], snapshots: [] }); return await loadText(f, 'future.json'); });
   ok(refused === false && await page.evaluate(() => data.bundles.length === 1), 'a file from a newer Tally is refused, and nothing is replaced');

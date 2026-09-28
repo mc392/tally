@@ -37,8 +37,15 @@
 // Version 6 (Sep 2026):
 //   flows[].overrides - {'YYYY-MM': amount} months set by hand in the cash-flow calendar. The figure is that
 //              month's actual amount: no inflation or pay rise is applied on top of it.
+//
+// Version 7 (Sep 2026):
+//   transactions[] - imported from bank CSVs (see transactions.js): {id, account, date, amount (− = out), description,
+//              merchant, bankCategory, category? (only when set by hand), source, batch}
+//   imports[] - {id, at, account, format, count, from, to}: one per import, so an import can be undone as a whole.
+//   categoryRules[] - {id, contains, category, min?, max?, account?}: first match wins.
+//   categoryMap - {bankCategory: category}: what a bank's own category (Amex gives one) means in the budget.
 const TallyModel = (() => {
-  const VERSION = 6;
+  const VERSION = 7;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -110,6 +117,7 @@ const TallyModel = (() => {
     d.flows ||= [];
     d.bundles ||= [];
     d.remortgageOptions ||= [];
+    d.transactions ||= []; d.imports ||= []; d.categoryRules ||= []; d.categoryMap ||= {};
     for (const k in d.scenarios || {}) { const sc = d.scenarios[k]; sc.option ??= null; sc.bundles ||= {}; sc.rateShift ??= 0; }
     for (const b of d.bundles) { b.on ??= true; b.scale ??= 1; b.contingency ??= 0; }
     for (const f of d.flows) { f.start ??= null; f.end ??= null; f.bundle ??= null; f.on ??= true; f.inflates ??= false; f.growth ??= 0; }

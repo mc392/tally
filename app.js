@@ -474,6 +474,7 @@ function vHome() {
       row({ title: 'Lowest cash month', sub: fMonth(lowest.date), value: amt(lowest.closing, { color: true }), act: 'push', arg: 'month:' + lowest.k, cls: 'tap' }) +
       (nextEv ? row({ title: 'Next big item', sub: `${esc(nextEv.name)} · ${fMonth(nextEv.start)}`, value: amt(nextEv.amount, { color: true, sign: true }), act: 'push', arg: 'events' }) : ''),
       `Looking ahead<b>${esc(sc.name)} scenario</b>`)}
+    ${data.transactions.length ? group(actualsLine(), 'Actual spending') : ''}
     ${group(
       row({ title: 'Coming in', value: amt(bud.income), act: 'tab', arg: 'plan' }) +
       row({ title: 'Going out', value: amt(-bud.out), act: 'tab', arg: 'plan' }) +
@@ -729,6 +730,7 @@ function vPlan() {
       ${group(inc + row({ title: 'Add income', act: 'add-income', cls: 'act-row', chev: false }), 'Income (monthly, after tax)')}
       ${group(Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => row({ title: esc(c), value: amt(v), vsub: `${short(v * 12)} a year`, act: 'push', arg: 'spending:' + c })).join('') +
         row({ title: 'Buffer for the unexpected', value: `${data.bufferPct}%`, act: 'edit-buffer' }) + row({ title: 'Add spending', act: 'add-spend', cls: 'act-row', chev: false }), 'Spending (monthly)')}
+      ${statementsGroup()}
       ${group(data.bundles.map(bundleRow).join('') + row({ title: 'Add a life event', act: 'add-bundle', cls: 'act-row', chev: false }), 'Life events', data.bundles.length ? 'Each event is a set of dated lines you can switch on or off, move or scale as one.' : 'A baby, a move, a renovation, a car, a big trip or time off work, as a set of dated costs and income changes you can switch on and off.')}
       ${group(
         row({ title: 'Mortgage', sub: mt.parts.length > 1 ? `${mt.parts.length} parts` : '', value: amt(mt.payment), vsub: mt.balance != null ? `${short(mt.balance)} owed` : 'balance not set', act: 'push', arg: 'mortgage' }) +
@@ -778,6 +780,234 @@ function vEvents() {
     body: `${group(ev.map(e => row({ title: esc(e.name), sub: flowWhen(e) + (e.settles ? ` · clears ${esc(acc(e.settles)?.name || '')}` : ''), value: amt(e.amount, { color: true, sign: true }), act: 'edit-event', arg: e.id, right: sw(e.on, 'ev-on', e.id), chev: false })).join('') || row({ title: 'Nothing planned' }),
       `One-off items<b>net ${money(net, { sign: true })}</b>`, 'Switch items off to see the projection without them. They stay here for later.')}
       ${group(row({ title: 'Add a payment or receipt', act: 'add-event', cls: 'act-row', chev: false }))}`,
+  };
+}
+
+// ---------- statements: transactions, budget vs actual, recurring (Phase 2) ----------
+const TXL = TallyTx;
+const txCtx = () => ({ model: TM, amountAt, mortgagePayment: mortgageTotals(data).payment, categorised: TXL.categorised(data) });
+const DEFAULT_CATS = ['Living', 'Bills', 'Home', 'Transport', 'Eating out', 'Shopping', 'Health', 'Pets', 'Holidays', 'Other'];
+function catOptions(extra) {
+  const planned = flowsOf('spend').map(f => f.category).concat(data.flows.filter(f => f.bundle).map(f => f.category));
+  const used = data.categoryRules.map(r => r.category).concat(data.transactions.map(t => t.category), Object.values(data.categoryMap));
+  const list = [...new Set([...planned, ...used, ...DEFAULT_CATS, ...(extra ? [extra] : [])].filter(c => c && !TXL.SPECIAL[c] && c !== 'Uncategorised'))].sort();
+  return [...list.map(c => [c, c]), ['Income', 'Income (money in)'], ['Transfer', 'Transfer between your accounts'], ['Ignore', 'Leave out'], ['__new', 'New category…']];
+}
+const accName = id => (acc(id) || { name: 'Unknown account' }).name;
+const monthName = m => fMonth(m + '-01');
+
+// Overview's one line: the latest month with transactions, against plan
+function actualsLine() {
+  if (!data.transactions.length) return '';
+  const m = TXL.months(data)[0], B = TXL.budgetVsActual(data, m, txCtx());
+  return row({ title: `${monthName(m)}: ${Math.abs(B.variance) < 5 ? 'on plan' : `${short(Math.abs(B.variance))} ${B.variance > 0 ? 'over' : 'under'} plan`}`, sub: `Spent ${short(B.actual)} against ${short(B.plan)} planned`, act: 'push', arg: 'actuals' });
+}
+function statementsGroup() {
+  const n = data.transactions.length, un = n ? TXL.categorised(data).filter(t => t.cat === 'Uncategorised').length : 0;
+  return group(
+    (n ? row({ title: 'Budget vs actual', sub: `${n} transactions from ${data.imports.length} import${data.imports.length === 1 ? '' : 's'}`, act: 'push', arg: 'actuals' }) +
+      (un ? row({ title: `Sort out ${un} uncategorised`, sub: 'Grouped by shop, one tap each', value: '<span class="pill warn">To do</span>', act: 'push', arg: 'uncat' }) : '') +
+      row({ title: 'Recurring payments', act: 'push', arg: 'recurring' }) + row({ title: 'All transactions', act: 'push', arg: 'txns' }) : '') +
+    row({ title: 'Import a bank statement (CSV)', act: 'csv-import', cls: 'act-row', chev: false }) +
+    (data.imports.length ? row({ title: 'Imports', value: String(data.imports.length), act: 'push', arg: 'imports' }) : ''),
+    'Spending, from your statements', n ? '' : 'Download a CSV from your bank’s website and import it here to see what you actually spend against the plan. Lloyds and American Express are recognised; for any other bank you choose which column is which.');
+}
+
+// ---- importing ----
+$('#csvIn').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) csvLoaded(await f.text(), f.name); });
+function csvLoaded(text, name, map) {
+  const guess = TXL.read(text, '_', map ? { map } : {});
+  if (guess.error === 'empty') return toast('That file is empty', true);
+  if (guess.error === 'unknown') return csvMapSheet(text, name, guess.header);
+  if (!guess.txns.length) return toast('No transactions found in that file', true);
+  const fmt = guess.format && TXL.FORMATS[guess.format];
+  const opts = data.accounts.filter(a => a.active !== false).map(a => [a.id, `${a.name} (${TYPE_LABEL[a.type]})`]);
+  if (!opts.length) return toast('Add the account under Accounts first', true);
+  const want = fmt && fmt.kind === 'card' ? ['card', 'card_0'] : ['current'];
+  const suggest = (data.accounts.find(a => want.includes(a.type)) || data.accounts[0]).id;
+  formSheet({
+    title: 'Import statement', values: { account: suggest },
+    sections: [{ head: `${esc(guess.formatName)} · ${guess.txns.length} transactions`, foot: `${fDate(guess.from)} to ${fDate(guess.to)}.${guess.badRows.length ? ` ${guess.badRows.length} rows could not be read and will be skipped.` : ''} Anything already imported is skipped.`, fields: [{ key: 'account', label: 'Which account is this?', type: 'select', options: opts }] }],
+    extra: meta.encrypt ? '' : '<p class="note"><b>Worth turning on encryption first</b> (Plan › Your data). Transactions show where you shop and when, which is more sensitive than balances, and they are saved in your finance file.</p>',
+    onSave: v => {
+      const r = TXL.read(text, v.account, map ? { map } : {}), f = TXL.fresh(data.transactions, r.txns);
+      const batch = uid('imp');
+      data.transactions.push(...f.add.map(t => ({ ...t, batch })));
+      data.imports.push({ id: batch, at: new Date().toISOString(), account: v.account, format: r.format || 'csv', count: f.add.length, dupes: f.dupes, from: r.from, to: r.to });
+      changed(f.add.length ? `Imported ${f.add.length}${f.dupes ? `, skipped ${f.dupes} already there` : ''}` : `Nothing new: all ${f.dupes} were already imported`);
+      actions.push(TXL.categorised(data).some(t => t.cat === 'Uncategorised') ? 'uncat' : 'actuals');
+    },
+  });
+}
+function csvMapSheet(text, name, header) {
+  const cols = [['', '—'], ...header.map((h, i) => [String(i), h || `Column ${i + 1}`])];
+  const find = re => { const i = header.findIndex(h => re.test(h)); return i < 0 ? '' : String(i); };
+  formSheet({
+    title: 'Which column is which?', values: { date: find(/date/i), description: find(/desc|detail|narrative|payee|merchant|name/i), amount: find(/^amount$|value/i), debit: find(/debit|paid out|money out|withdraw/i), credit: find(/credit|paid in|money in|deposit/i), sign: 'neg' },
+    sections: [{ head: esc(name), foot: 'Fill in either Amount, or both Money out and Money in.', fields: [
+      { key: 'date', label: 'Date', type: 'select', options: cols }, { key: 'description', label: 'Description', type: 'select', options: cols },
+      { key: 'amount', label: 'Amount', type: 'select', options: cols }, { key: 'sign', label: 'In the Amount column, spending is', type: 'select', options: [['neg', 'Negative (−)'], ['pos', 'Positive']] },
+      { key: 'debit', label: 'Money out', type: 'select', options: cols }, { key: 'credit', label: 'Money in', type: 'select', options: cols }] }],
+    onSave: v => {
+      const n = x => (x === '' || x == null ? null : +x);
+      if (n(v.date) == null || n(v.description) == null || (n(v.amount) == null && n(v.debit) == null && n(v.credit) == null)) { toast('Choose the date, description and amount columns', true); return false; }
+      setTimeout(() => csvLoaded(text, name, { date: n(v.date), description: n(v.description), amount: n(v.amount), debit: n(v.debit), credit: n(v.credit), outIsNegative: v.sign === 'neg' }), 360);
+    },
+  });
+}
+function vImports() {
+  return {
+    title: 'Imports', large: true, back: 'Plan',
+    body: group([...data.imports].reverse().map(i => row({ title: `${esc(accName(i.account))}`, sub: `${fDate(i.at.slice(0, 10))} · ${i.count} added${i.dupes ? `, ${i.dupes} skipped` : ''} · ${i.from ? fDate(i.from) + ' to ' + fDate(i.to) : ''}`, act: 'undo-import', arg: i.id, value: '<span class="pill">Remove</span>', chev: false })).join('') || row({ title: 'Nothing imported yet' }), 'Each import', 'Removing an import takes out exactly the transactions it added.'),
+  };
+}
+
+// ---- categorising ----
+function catSheet(t) {
+  const all = TXL.categorised(data), me = all.find(x => x.id === t.id), same = all.filter(x => x.merchant === me.merchant && x.account === me.account);
+  formSheet({
+    title: me.merchant || 'Transaction', values: { cat: me.cat === 'Uncategorised' ? '' : me.cat, newCat: '', all: same.length > 1 },
+    sections: [{ head: `${fDate(me.date)} · ${esc(accName(me.account))} · ${money(me.amount, { sign: true, dp: true })}`, foot: esc(me.description) + (me.bankCategory ? ` · bank category: ${esc(me.bankCategory)}` : ''), fields: [
+      { key: 'cat', label: 'Category', type: 'select', options: [['', 'Choose…'], ...catOptions()] }, { key: 'newCat', label: 'Or a new one', type: 'text', optional: true, ph: 'Only if you chose “New category”' },
+      ...(same.length > 1 ? [{ key: 'all', label: `All ${same.length} from ${me.merchant}`, type: 'toggle', hint: 'Makes a rule, so future imports are sorted too' }] : [])] }],
+    extra: me.by === 'hand' ? destructive('Go back to the automatic category', 'auto') : '',
+    onSave: (v, act) => {
+      const raw = data.transactions.find(x => x.id === t.id);
+      if (act === 'auto') { delete raw.category; return changed('Back to automatic'); }
+      const cat = v.cat === '__new' ? (v.newCat || '').trim() : v.cat;
+      if (!cat) { toast('Choose a category', true); return false; }
+      if (v.all && same.length > 1) {
+        data.categoryRules = data.categoryRules.filter(r => !(r.contains === me.merchant && !r.min && !r.max));
+        data.categoryRules.unshift({ id: uid('rule'), contains: me.merchant, category: cat, account: me.account });
+        delete raw.category;
+        changed(`${same.length} set to ${cat}`);
+      } else { raw.category = cat; changed(`Set to ${cat}`); }
+    },
+  });
+}
+function vUncat() {
+  const un = TXL.categorised(data).filter(t => t.cat === 'Uncategorised');
+  const g = {}; for (const t of un) { const k = t.account + '|' + t.merchant; (g[k] ||= { m: t.merchant, account: t.account, n: 0, total: 0, id: t.id }); g[k].n++; g[k].total += t.amount; }
+  const list = Object.values(g).sort((a, b) => b.n - a.n || a.total - b.total);
+  return {
+    title: 'Uncategorised', large: true, back: 'Plan',
+    body: list.length ? `<p class="note">${un.length} transactions from ${list.length} places. Choosing a category for one sorts every transaction from that place, now and in future imports.</p>` +
+      group(list.map(x => row({ title: esc(x.m), sub: `${x.n} transaction${x.n === 1 ? '' : 's'} · ${esc(accName(x.account))}`, value: amt(x.total, { sign: true, color: true }), act: 'cat-tx', arg: x.id })).join(''))
+      : '<p class="note">Everything has a category.</p>',
+  };
+}
+function vTxns(arg) {
+  const [f, v] = arg ? arg.split('=') : [];
+  const [cat, range] = f === 'cat' ? v.split('@') : [null, null];
+  let l = TXL.categorised(data);
+  if (cat) l = l.filter(t => t.cat === cat && (!range || inRange(t.date, range)));
+  l.sort((a, b) => b.date.localeCompare(a.date));
+  const shown = l.slice(0, 300);
+  return {
+    title: cat || 'Transactions', large: true, back: 'Back',
+    body: `${cat ? `<div class="subtitle">${esc(rangeLabel(range))} · ${l.length} transactions · ${money(-l.reduce((s, t) => s + t.amount, 0))}</div>` : ''}` +
+      group(shown.map(t => row({ title: esc(t.merchant || t.description), sub: `${fDate(t.date)} · ${esc(accName(t.account))}${t.pair ? ' · matched transfer' : ''}`, value: `${amt(t.amount, { sign: true, color: true, dp: true })}<div class="sub"><span class="catchip ${t.cat === 'Uncategorised' ? 'x' : ''}">${esc(t.cat)}</span></div>`, act: 'cat-tx', arg: t.id })).join('') || row({ title: 'None' }),
+        '', l.length > 300 ? `Showing the latest 300 of ${l.length}.` : 'Tap one to change its category.'),
+  };
+}
+
+// ---- budget vs actual (2.3) ----
+// range: a month 'YYYY-MM', 'ytd' (this tax year so far) or '12m' (the last 12 months with transactions)
+function rangeMonths(range) {
+  const ms = TXL.months(data);
+  if (!range || /^\d{4}-\d{2}$/.test(range)) return [range || ms[0]];
+  if (range === '12m') return ms.slice(0, 12);
+  const now = thisMonth(), [y, m] = now.split('-').map(Number), tyStart = `${m >= 4 ? y : y - 1}-04`;
+  return ms.filter(x => x >= tyStart && x <= now);
+}
+const inRange = (date, range) => rangeMonths(range).includes(date.slice(0, 7));
+const rangeLabel = r => !r || /^\d{4}-\d{2}$/.test(r) ? monthName(r || TXL.months(data)[0]) : r === '12m' ? 'Last 12 months' : 'This tax year so far';
+function vActuals() {
+  if (!data.transactions.length) return { title: 'Budget vs actual', large: true, back: 'Plan', body: '<p class="note">Import a bank statement first.</p>' };
+  const ms = TXL.months(data), range = ui.actRange || ms[0], ctx = txCtx(), list = rangeMonths(range);
+  const per = list.map(m => TXL.budgetVsActual(data, m, ctx)), agg = {};
+  for (const B of per) for (const r of B.rows) { const a = agg[r.category] ||= { category: r.category, plan: 0, actual: 0, count: 0 }; a.plan += r.plan; a.actual += r.actual; a.count += r.count; }
+  const rows = Object.values(agg).map(r => ({ ...r, variance: r.actual - r.plan })).sort((a, b) => b.actual - a.actual);
+  const P = rows.reduce((s, r) => s + r.plan, 0), A = rows.reduce((s, r) => s + r.actual, 0);
+  const accs = [...new Set(data.transactions.map(t => t.account))].map(accName);
+  const bar = r => { const top = Math.max(r.plan, r.actual, 1); return `<div class="bar2"><i class="${r.actual > r.plan ? 'over' : ''}" style="width:${Math.min(100, r.actual / top * 100)}%"></i>${r.plan ? `<b style="left:${Math.min(99, r.plan / top * 100)}%"></b>` : ''}</div>`; };
+  return {
+    title: 'Budget vs actual', large: true, back: 'Plan',
+    body: `<div class="chips">${ms.slice(0, 6).map(m => `<button class="${m === range ? 'on' : ''}" data-act="act-range" data-arg="${m}">${fMonth(m + '-01', true)}</button>`).join('')}<button class="${range === 'ytd' ? 'on' : ''}" data-act="act-range" data-arg="ytd">Tax year</button><button class="${range === '12m' ? 'on' : ''}" data-act="act-range" data-arg="12m">12 months</button></div>
+      <div class="hero"><div class="cap">${esc(rangeLabel(range))}</div><div class="big amt ${A > P ? 'neg' : ''}">${money(A - P, { sign: true }).replace('£', '<span class="p">£</span>')}</div><div class="eq">${A > P ? 'over' : 'under'} plan · spent ${short(A)} of ${short(P)}</div></div>
+      ${group(rows.map(r => row({ title: esc(r.category) + bar(r), sub: `${r.count} transactions${r.plan ? ` · plan ${short(r.plan)}` : ' · not in the plan'}`, value: amt(r.actual), vsub: r.plan ? `<span class="${r.variance > 0 ? 'neg' : ''}">${money(r.variance, { sign: true })}${r.plan ? ` (${Math.round(r.variance / r.plan * 100)}%)` : ''}</span>` : '', act: 'push', arg: `txns:cat=${r.category}@${range}` })).join(''),
+        'By category', `Bar: spent; mark: plan. From ${esc(accs.join(', '))}. Transfers between your accounts and money in are left out.`)}
+      ${recalGroup()}
+      ${group(row({ title: 'What the bank’s categories mean', sub: 'e.g. American Express “Groceries” → Living', act: 'bank-cats' }) + row({ title: 'Your rules', value: String(data.categoryRules.length), act: 'push', arg: 'rules' }))}
+      <p class="note">Only accounts you have imported are counted. If you pay for things from an account you haven’t imported, those months will look under plan.</p>`,
+  };
+}
+// Recalibration (1.7): the last three complete months of actual spending against plan, by category.
+// Complete = not the current month. Suggests a change where a category is more than 10% away from plan.
+function recalibration() {
+  const ms = TXL.months(data).filter(m => m < thisMonth()).slice(0, 3);
+  if (ms.length < 3) return null;
+  return TXL.recalibrate(data, ms, txCtx());
+}
+function recalGroup() {
+  const R = recalibration(); if (!R) return '';
+  const lines = R.rows.map(r => row({ title: `${esc(r.category)}: ${short(r.actual)} a month`, sub: `Planned ${short(r.plan)}. Tap to update the plan to the 3-month average.`, value: amt(r.actual - r.plan, { sign: true, color: true }), act: 'recal', arg: r.category + '|' + r.actual.toFixed(2) })).join('');
+  return (R.over ? `<div class="warnchip" role="status"><div><b>Spending is running over plan</b><br>The last three months averaged ${money(R.actual)} a month against ${money(R.plan)} planned (${Math.round((R.actual / R.plan - 1) * 100)}% over).</div></div>` : '') +
+    (lines ? group(lines, `Against plan<b>${fMonth(R.months[2] + '-01', true)} – ${fMonth(R.months[0] + '-01', true)}</b>`, 'Averages of the last three complete months. Only categories more than 10% away from plan are shown.') : '');
+}
+function recalApply(arg) {
+  const [cat, avg] = [arg.slice(0, arg.lastIndexOf('|')), +arg.slice(arg.lastIndexOf('|') + 1)];
+  const l = flowsOf('spend').filter(f => (f.category || 'Other') === cat && !f.linked && flowLiveNow(f));
+  if (l.length !== 1) { toast(l.length ? `${cat} has ${l.length} plan lines: change them on its page` : `${cat} has no plan line to change`, true); return actions.push('spending:' + cat); }
+  if (!confirm(`Change “${l[0].name}” from ${money(l[0].amount)} to ${money(avg)} a month?`)) return;
+  l[0].amount = Math.round(avg * 100) / 100; changed(`${l[0].name} updated`);
+}
+function bankCatSheet() {
+  const seen = [...new Set(data.transactions.map(t => t.bankCategory).filter(Boolean))].sort();
+  if (!seen.length) return toast('None of your imports came with bank categories', true);
+  const vals = {}; for (const c of seen) vals['c_' + seen.indexOf(c)] = data.categoryMap[c] || '';
+  formSheet({
+    title: 'Bank categories', values: vals,
+    sections: [{ foot: 'Blank keeps Tally’s guess. A rule or a category you set by hand still wins.', fields: seen.map((c, i) => ({ key: 'c_' + i, label: c, type: 'select', options: [['', 'Tally’s guess'], ...catOptions().filter(o => o[0] !== '__new')] })) }],
+    onSave: v => { seen.forEach((c, i) => { if (v['c_' + i]) data.categoryMap[c] = v['c_' + i]; else delete data.categoryMap[c]; }); changed('Saved'); },
+  });
+}
+function vRules() {
+  return {
+    title: 'Rules', large: true, back: 'Back',
+    body: group(data.categoryRules.map(r => row({ title: `“${esc(r.contains)}” → ${esc(r.category)}`, sub: [r.account ? esc(accName(r.account)) : 'Any account', r.min != null ? `from £${r.min}` : '', r.max != null ? `up to £${r.max}` : ''].filter(Boolean).join(' · '), act: 'edit-rule', arg: r.id })).join('') || row({ title: 'No rules yet' }),
+      'First match wins', 'A rule is made when you set a category for everything from one place. Rules apply to transactions already imported, too.') + group(row({ title: 'Add a rule', act: 'edit-rule', cls: 'act-row', chev: false })),
+  };
+}
+function ruleSheet(id) {
+  const r = id ? data.categoryRules.find(x => x.id === id) : { contains: '', category: '', min: null, max: null, account: '' };
+  formSheet({
+    title: id ? 'Rule' : 'New rule', values: { ...r, account: r.account || '' },
+    sections: [{ fields: [{ key: 'contains', label: 'Description contains', type: 'text' }, { key: 'category', label: 'Category', type: 'select', options: catOptions(r.category).filter(o => o[0] !== '__new') },
+      { key: 'min', label: 'Amount from', type: 'money', optional: true }, { key: 'max', label: 'Amount up to', type: 'money', optional: true },
+      { key: 'account', label: 'Account', type: 'select', options: [['', 'Any'], ...data.accounts.map(a => [a.id, a.name])] }] }],
+    extra: id ? destructive('Delete rule', 'delete') : '',
+    onSave: (v, act) => {
+      if (act === 'delete') { data.categoryRules = data.categoryRules.filter(x => x.id !== id); return changed('Rule deleted'); }
+      if (!v.contains.trim()) { toast('Enter some text to match', true); return false; }
+      const rec = { contains: v.contains.trim().toUpperCase(), category: v.category, min: v.min, max: v.max, account: v.account || null };
+      if (id) Object.assign(r, rec); else data.categoryRules.push({ id: uid('rule'), ...rec });
+      changed('Rule saved');
+    },
+  });
+}
+
+// ---- recurring (2.4) ----
+function vRecurring() {
+  const R = TXL.recurring(TXL.categorised(data), todayISO());
+  const flag = r => [r.isNew ? '<span class="pill">New</span>' : '', r.rise ? `<span class="pill warn">Up ${money(r.rise, { dp: true })}</span>` : '', r.stopped ? '<span class="pill">Stopped?</span>' : ''].join(' ');
+  const live = R.filter(r => !r.stopped), gone = R.filter(r => r.stopped);
+  const list = l => l.map(r => row({ title: esc(r.merchant), sub: `${r.cadence} · ${esc(r.category)} · last ${fDate(r.last)}${r.stopped ? '' : ` · next about ${fDate(r.next)}`}${r.rise ? ` · up since ${fDate(r.riseSince)}` : ''}`, value: `${money(r.amount, { dp: true })}${flag(r) ? `<div class="sub">${flag(r)}</div>` : ''}`, vsub: r.cadence === 'monthly' ? '' : `${short(r.perMonth)} a month`, act: 'push', arg: `txns:cat=${r.category}@12m` })).join('');
+  return {
+    title: 'Recurring payments', large: true, back: 'Plan',
+    body: R.length ? `<div class="hero"><div class="cap">Regular payments</div><div class="big amt">${money(live.reduce((s, r) => s + r.perMonth, 0)).replace('£', '<span class="p">£</span>')}</div><div class="eq">a month, from ${live.length} payments</div></div>
+      ${group(list(live), 'Still going', 'Found from payments to the same place at a steady rhythm and a similar amount. New, price rises and ones that seem to have stopped are flagged.')}
+      ${gone.length ? group(list(gone), 'Seem to have stopped', 'No payment for well over its usual gap.') : ''}` : '<p class="note">None found yet. Import a few months of statements.</p>',
   };
 }
 
@@ -1392,7 +1622,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -1439,6 +1669,9 @@ const actions = {
   'add-bundle': templatePicker, 'edit-bundle': bundleSheet,
   'edit-remortgage': remortgageSheet, 'add-option': () => optionSheet(null), 'edit-option': optionSheet, 'edit-scplan': scenarioPlanSheet,
   'cmp-win': m => { ui.cmpWin = +m; render(); }, 'cal-month': calendarMonthSheet,
+  'csv-import': () => $('#csvIn').click(), 'act-range': r => { ui.actRange = r; render(); }, 'bank-cats': bankCatSheet,
+  'cat-tx': id => catSheet({ id }), recal: recalApply, 'edit-rule': id => ruleSheet(id || null),
+  'undo-import': id => { const i = data.imports.find(x => x.id === id); if (!i || !confirm(`Remove the ${i.count} transactions this import added?`)) return; data.transactions = data.transactions.filter(t => t.batch !== id); data.imports = data.imports.filter(x => x.id !== id); changed('Import removed'); },
   'cmp-sc': k => { const cur = (ui.cmpSc || Object.keys(data.scenarios)).filter(x => data.scenarios[x]); ui.cmpSc = cur.includes(k) ? (cur.length > 1 ? cur.filter(x => x !== k) : cur) : [...cur, k].slice(-3); render(); }, 'leak-ok': () => { ui.leak = null; render(); },
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),

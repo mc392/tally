@@ -71,6 +71,12 @@ input,select{font:inherit; letter-spacing:inherit; color:inherit}
 .cmp td.best{color:var(--green); font-weight:600}
 .cmp .sub{font-size:11px; color:var(--label2); font-weight:400}
 .cmp tr.sec th{text-align:left; color:var(--label); font-weight:600; padding-top:14px}
+.bar2{height:6px; border-radius:3px; background:var(--fill); margin-top:6px; position:relative; overflow:hidden}
+.bar2 i{position:absolute; left:0; top:0; bottom:0; border-radius:3px; background:var(--accent)}
+.bar2 i.over{background:var(--orange)}
+.bar2 b{position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--label2)}
+.catchip{font-size:12px; padding:2px 8px; border-radius:10px; background:var(--fill); color:var(--label2); white-space:nowrap}
+.catchip.x{background:rgba(255,149,0,.16); color:var(--orange)}
 .pill{font-size:13px; font-weight:600; padding:5px 10px; border-radius:14px; background:var(--fill); color:var(--label2); white-space:nowrap}
 .pill.warn{background:rgba(255,149,0,.16); color:var(--orange)}
 .pill.ok{color:var(--green); background:rgba(52,199,89,.14)}
@@ -238,9 +244,11 @@ textarea{width:100%; min-height:160px; border-radius:12px; border:0; padding:12p
 </div></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="fileIn" accept="application/json,.json,.tally" hidden>
+<input type="file" id="csvIn" accept=".csv,text/csv" hidden>
 <script src="model.js"></script>
 <script src="engine.js"></script>
 <script src="templates.js"></script>
+<script src="transactions.js"></script>
 <script src="storage.js"></script>
 <script src="app.js"></script>
 </body>

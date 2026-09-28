@@ -218,7 +218,7 @@ Compare whole plans, not just growth assumptions.
 
 ### 1.7 Short-to-mid-term precision
 
-> **Status: calendar and drift done (28 Sep 2026); recalibration from actuals waits for Phase 2.** The calendar is a list of months, each opening an editable sheet, rather than a months × flows grid - a grid with a column per flow does not fit a phone. Drift splits the difference by cash / ISAs / other, and says what each could mean; it cannot yet say "spending £2.1k over" without transactions.
+> **Status: done (28 Sep 2026).** Recalibration arrived with Phase 2: the last three complete months against plan, flagging over 10%. The calendar is a list of months, each opening an editable sheet, rather than a months × flows grid - a grid with a column per flow does not fit a phone. Drift splits the difference by cash / ISAs / other, and says what each could mean; it cannot yet say "spending £2.1k over" without transactions.
 The period up to the remortgage decision needs the most accuracy.
 
 - **Cash-flow calendar.** A 24-month grid of months (rows) by flows (columns). Every cell can be edited, so known one-offs can be dropped into exact months.
@@ -230,6 +230,8 @@ The period up to the remortgage decision needs the most accuracy.
 ## Phase 2: Transactions and spend analysis
 
 ### 2.1 CSV import
+
+> **Status: Lloyds, Amex and map-the-columns done (28 Sep 2026).** Monzo and Trading 212 wait for a real export to confirm their layout. Transactions stay in the main (encrypted) file: a year of both accounts is well under 100KB, so no companion file yet.
 - An importer for each format: Monzo, Amex, Lloyds, Trading 212, plus a generic "map the columns" option for anything else.
 - Detect the format from the header row. Skip duplicates using a hash of date + amount + description + account.
 - Transactions are stored in the data file as `transactions[] {id, account, date, amount, description, merchant, category, flowId}`.
@@ -240,21 +242,29 @@ The period up to the remortgage decision needs the most accuracy.
 - Each bank's sample file (synthetic) parses correctly.
 
 ### 2.2 Categorisation rules
+
+> **Status: done.** Rules are made from "all from this place" and apply to everything already imported. Amex's own categories map onto Plan categories.
 - Rules take the form "description contains X → category Y", with an optional amount range.
 - Correcting one transaction offers to create a rule and apply it to past matches.
 - Monzo's own categories can be used as a starting point.
 - Categories map onto Plan spending lines, so actuals line up with the budget.
 
 ### 2.3 Budget vs actual
+
+> **Status: done**, by month, tax year so far and 12 months, with drill-down; one line on Overview.
 - For each month and category: plan, actual, variance in £ and %, with drill-down to the underlying transactions.
 - Year-to-date and rolling 12-month views.
 - The main screen shows one line only, e.g. "September: £420 over plan". Everything else sits one tap deeper.
 
 ### 2.4 Recurring payments and subscriptions
+
+> **Status: done.**
 - Detect charges that repeat on a similar amount and cadence.
 - Flag new ones, price rises, and any that have stopped.
 
 ### 2.5 Transfers between own accounts
+
+> **Status: done**, within 5 days, across different accounts.
 - Match equal and opposite amounts on nearby dates, so moving money between accounts isn't counted as spending.
 
 ---
