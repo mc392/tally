@@ -4,8 +4,9 @@
 // not copied from what the engine returned. No real data lives in this repository.
 const assert = require('assert');
 const { project, monthlyBudget } = require('../engine.js');
+const { migrate } = require('../model.js'); // the fixture is written in the v1 shape, so this also exercises the upgrade
 
-const fixture = {
+const fixture = migrate({
   accounts: [
     { id: 'cur', owner: 'M', type: 'current', rate: 0 },
     { id: 'cisa', owner: 'M', type: 'cash_isa', rate: 3 },
@@ -20,7 +21,7 @@ const fixture = {
   rules: { cashFloor: 15000, isaAllowance: 20000, isaUsed: 5000, isaUsedTaxYear: 2026, sweepToSS: 50 },
   scenario: 'flat',
   scenarios: { flat: { growth: false, ssReturn: 0, inflation: 0, payRise: 0 } },
-};
+});
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.01, `${msg}: got ${a.toFixed(2)}, expected ${b}`);
 

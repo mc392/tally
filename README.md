@@ -5,13 +5,13 @@ Your figures live in **one file you own** (`family-finances.json`) in iCloud Dri
 
 ## What it does
 
-- **Overview** – net worth, change since the last update, and a chart of recorded history running into the projection.
-- **Accounts** – every account grouped by type and person; tap through to each account's history.
-- **Update balances** – one screen, pre-filled with your last figures; saving creates a dated milestone.
-- **Projection** – month-by-month model of cash and ISAs with Cautious / Base / Optimistic scenarios, 18 months to 10 years. Tap any month for the full cash waterfall and ISA allowance workings.
-- **Plan** – income, spending lines, mortgage (including a post-fix remortgage), one-off payments and receipts, cash floor and ISA rules.
-
-The projection logic reproduces the original spreadsheet exactly (see `tests/engine.test.js`).
+- **Overview** – net worth, change since the last update, a chart of history running into the projection, and one line on actual spending against plan.
+- **Accounts** – every account grouped by type and person, each with how quickly the money can be used (instant, notice, fixed, invested, locked).
+- **Update balances** – one screen, pre-filled with your last figures; saving creates a dated milestone and shows what changed and why: money put in, investment growth, interest, debt paid off, and how far ahead of or behind plan you are.
+- **Projection** – month by month, in each scenario, 18 months to 10 years, optionally in today's money. Compare up to three whole plans side by side. A range of 2,000 possible futures, and one-tap stress tests.
+- **Plan** – income and spending that can start and stop on a month, a 24-month cash-flow calendar, the mortgage (split into parts if it has them), life events from templates (baby, move, renovation, car, big trip, career break), goals, and ISA rules (£20k each, one person's filled first).
+- **Remortgage** – a readiness screen for the next fix end (what you'll have free to overpay, what's earmarked, key dates), a warning when a change eats into it, an optional glide path or target, and a side-by-side comparison of the deals you're weighing up.
+- **Spending** – import bank statement CSVs (Lloyds and American Express recognised; any bank by picking its columns): categories and rules, transfers between your own accounts matched, budget against actual, recurring payments.
 
 ## Files
 
@@ -21,6 +21,10 @@ The projection logic reproduces the original spreadsheet exactly (see `tests/eng
 | `app.js` | Screens and editing |
 | `storage.js` | Opening and saving your file: live save, encryption, "changed on another device" checks |
 | `engine.js` | The projection maths (no screen code) |
+| `model.js` | The shape of the finance file, and upgrading older files |
+| `templates.js` | Life-event templates |
+| `transactions.js` | Reading bank CSVs, categories, transfers, budget vs actual, recurring payments |
+| `analysis.js`, `mc-worker.js` | Goals, where changes came from, the ISA year, stress tests and the range of outcomes |
 | `sw.js`, `manifest.webmanifest`, `icons/` | Let iPhone install it to the Home Screen and run it offline |
 | `tests/` | Checks the maths still matches the spreadsheet, and that saving and encryption behave |
 

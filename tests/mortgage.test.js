@@ -3,9 +3,10 @@
 // not copied from what the engine returned. Synthetic data only.
 const assert = require('assert');
 const { project, monthlyBudget, mortgageTotals, mortgageParts } = require('../engine.js');
+const { migrate } = require('../model.js');
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.005, `${msg}: got ${a}, expected ${b}`);
-const practice = mortgage => ({
+const practice = mortgage => migrate({
   accounts: [{ id: 'c', type: 'current' }], snapshots: [{ date: '2026-06-01', balances: { c: 50000 } }],
   income: [{ monthly: 6000 }], spending: [{ annual: 12000 }, { name: 'Mortgage', linked: 'mortgage' }], bufferPct: 0, events: [],
   rules: { cashFloor: 10000, isaAllowance: 0, isaUsed: 0, isaUsedTaxYear: 2026, sweepToSS: 0 },

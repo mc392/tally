@@ -7,3 +7,8 @@ node_modules/
 
 # Anything under tests/private stays on your machine (e.g. checks against your real spreadsheet).
 tests/private/
+
+# Bank statement exports are real transactions: never commit one. Only the made-up samples used by the tests.
+*.csv
+*.CSV
+!tests/fixtures/*.csv
