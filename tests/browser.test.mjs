@@ -23,8 +23,10 @@ const sample = {
   people: [{ id: 'M', name: 'Me' }, { id: 'C', name: 'Partner' }, { id: 'J', name: 'Joint' }],
   accounts: [{ id: 'cur', name: 'Test Current', owner: 'M', type: 'current', rate: 0, active: true }, { id: 'isa', name: 'Test ISA', owner: 'M', type: 'ss_isa', rate: 5, active: true }],
   snapshots: [{ date: '2026-09-01', balances: { cur: 4321, isa: 98765 } }],
-  income: [{ name: 'Pay', owner: 'M', monthly: 3000 }], spending: [{ name: 'Rent', category: 'Home', annual: 12000, inflates: true }],
-  bufferPct: 5, events: [], mortgage: { payment: 0 },
+  income: [{ name: 'Pay', owner: 'M', monthly: 3000 }], spending: [{ name: 'Rent', category: 'Home', annual: 12000, inflates: true }, { name: 'Mortgage', category: 'Home', linked: 'mortgage' }],
+  bufferPct: 5, events: [],
+  // the flat shape every file had before mortgage parts: must still open, as one part
+  mortgage: { payment: 900, balance: 150000, rate: 4, fixEnd: '2027-06-01', newRate: 5, termEnd: '2045-01-01', propertyValue: 300000 },
 };
 
 // A fake file handle, installed before the app loads. window.__disk is "the file on disk";
@@ -127,6 +129,36 @@ try {
   await page2.fill('.sheet-wrap.open #p_p1', 'purple tractor seventeen'); await page2.click('.sheet-wrap.open .done');
   await page2.waitForFunction(() => data && data.bufferPct === 11, null, { timeout: 15000 });
   ok(true, 'right passphrase opens it');
+
+  console.log('Mortgage parts');
+  ok(await page.evaluate(() => data.mortgage.parts.length === 1 && data.mortgage.parts[0].balance === 150000 && data.mortgage.propertyValue === 300000), 'an old single mortgage opens as one part, nothing lost');
+  await page.click('#tabbar [data-arg="plan"]');
+  await page.click('[data-act="push"][data-arg="mortgage"]');
+  ok((await page.textContent('#main')).includes('Home equity'), 'single mortgage screen shows its details');
+  await page.click('[data-act="add-part"]');
+  await page.waitForSelector('.sheet-wrap.open #f_payment');
+  await page.fill('.sheet-wrap.open #f_name', 'Further advance');
+  await page.fill('.sheet-wrap.open #f_payment', '250');
+  await page.fill('.sheet-wrap.open #f_balance', '30000');
+  await page.fill('.sheet-wrap.open #f_rate', '5.5');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.mortgage.parts.length === 2);
+  let main = await page.textContent('#main');
+  ok(main.includes('Part 1') && main.includes('Further advance') && main.includes('2 parts'), 'two parts listed, the original named Part 1');
+  ok(main.includes('£1,150') && main.includes('£180,000') && main.includes('£120,000'), 'total payment £1,150, total owed £180,000, equity £120,000');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+  const saved = JSON.parse(await page.evaluate(() => window.__disk));
+  ok(saved.format === 'tally-encrypted', 'saved (still encrypted)');
+  ok(await page.evaluate(() => mortgageTotals(data).payment === 1150 && Math.abs(monthlyBudget(data).spend - (1000 + 1150)) < 0.01), 'both parts count towards spending');
+  await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-mortgage-parts.png'), fullPage: true });
+  await page.click('[data-act="push"][data-arg^="mpart:"]:not([data-arg="mpart:main"])');
+  ok((await page.textContent('#main')).includes('Further advance'), 'a part opens on its own screen');
+  await page.click('#navR [data-act="edit-part"]');
+  await page.waitForSelector('.sheet-wrap.open [data-sact="delete"]');
+  page.once('dialog', d => d.accept());
+  await page.click('.sheet-wrap.open [data-sact="delete"]');
+  await page.waitForFunction(() => data.mortgage.parts.length === 1);
+  ok((await page.textContent('#main')).includes('Home equity') && !(await page.textContent('#main')).includes('2 parts'), 'deleting a part goes back to the single mortgage');
 
   ok((await page.evaluate(() => window.__csp)).length === 0 && (await page2.evaluate(() => window.__csp)).length === 0, 'nothing blocked by the security policy');
   ok(errors.length === 0, 'no script errors' + (errors.length ? ': ' + errors.join('; ') : ''));

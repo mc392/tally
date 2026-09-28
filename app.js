@@ -69,10 +69,20 @@ function prevValue(id, beforeDate) {
   return s.length ? s[s.length - 1].balances[id] : null;
 }
 
+const PART_KEYS = ['payment', 'balance', 'rate', 'fixEnd', 'newRate', 'termEnd'];
+const partName = (p, i) => p.name || (data.mortgage.parts.length > 1 ? `Part ${i + 1}` : 'Mortgage');
 function normalise(d) {
   d.people ||= [{ id: 'M', name: 'Me' }, { id: 'C', name: 'Partner' }, { id: 'J', name: 'Joint' }];
   d.accounts ||= []; d.snapshots ||= []; d.income ||= []; d.spending ||= []; d.events ||= [];
   d.mortgage ||= { payment: 0 };
+  if (!Array.isArray(d.mortgage.parts)) {
+    // Before parts existed the mortgage was one flat record; it becomes the first (and only) part.
+    const o = d.mortgage, part = { id: 'main', name: '' };
+    for (const k of PART_KEYS) if (o[k] != null && o[k] !== '') part[k] = o[k];
+    part.payment ||= 0;
+    d.mortgage = { parts: [part] }; if (o.propertyValue != null) d.mortgage.propertyValue = o.propertyValue;
+  }
+  if (!d.mortgage.parts.length) d.mortgage.parts.push({ id: uid('mp'), name: '', payment: 0 });
   d.rules = Object.assign({ cashFloor: 10000, isaAllowance: 40000, isaUsed: 0, isaUsedTaxYear: new Date().getFullYear(), sweepToSS: 0 }, d.rules || {});
   d.bufferPct ??= 5;
   d.scenarios ||= {
@@ -84,7 +94,7 @@ function normalise(d) {
   return d;
 }
 function blankFile() {
-  return normalise({ app: 'tally', version: 1, people: [{ id: 'M', name: 'Me' }, { id: 'C', name: 'Partner' }, { id: 'J', name: 'Joint' }], mortgage: { payment: 0 } });
+  return normalise({ app: 'tally', version: 1, people: [{ id: 'M', name: 'Me' }, { id: 'C', name: 'Partner' }, { id: 'J', name: 'Joint' }], mortgage: { parts: [{ id: 'main', name: '', payment: 0 }] } });
 }
 
 // ---------- persistence (working copy on this device) ----------
@@ -384,8 +394,8 @@ function vHome() {
   const T = snapshotTotals(data, last), P = prev ? snapshotTotals(data, prev) : null;
   const pr = project(data, scenarioKey(), horizon()), end = pr.rows.at(-1);
   const days = daysSince(last.date);
-  const m = data.mortgage;
-  const equity = m.propertyValue && m.balance != null ? m.propertyValue - m.balance : null;
+  const m = data.mortgage, mt = mortgageTotals(data);
+  const equity = m.propertyValue && mt.balance != null ? m.propertyValue - mt.balance : null;
   const big = money(T.net).replace('£', '<span class="p">£</span>');
 
   const hist = snaps.map(s => ({ t: Date.parse(s.date), v: snapshotTotals(data, s).net }));
@@ -604,7 +614,8 @@ function vMonth(k) {
       ${group(
         line('Stocks & shares ISAs', r.isaSS) + line('Cash ISAs', r.isaCash) + (r.growth ? line('Growth this month', r.growth, { sign: true }) : '') + line('Other savings and debts', r.other) + line('Net worth', r.net, { total: true }),
         'Balances at month end')}
-      ${m ? group(line('Mortgage payment', -r.mortgagePay) + line('Of which interest', -r.mortgageInterest) + line('Mortgage balance', -r.mortgageBal, { total: true }), 'Mortgage') : ''}</div>`,
+      ${m ? group((r.mortgageParts.length > 1 ? r.mortgageParts.map((p, i) => line(esc(p.name || `Part ${i + 1}`), -p.pay, { sub: p.bal != null ? `${short(p.bal)} left` : 'Flat payment' })).join('') : '') +
+        line('Mortgage payment', -r.mortgagePay) + line('Of which interest', -r.mortgageInterest) + line('Mortgage balance', -r.mortgageBal, { total: true }), 'Mortgage') : ''}</div>`,
   };
 }
 function ymKeyOf(d) { const [y, m] = d.split('-').map(Number); return y * 12 + m - 1; }
@@ -626,8 +637,8 @@ function vScenario(key) {
 
 // ---------- plan ----------
 function vPlan() {
-  const b = monthlyBudget(data), m = data.mortgage, r = data.rules;
-  const cats = {}; for (const l of data.spending) { const v = l.linked === 'mortgage' ? (+m.payment || 0) : (+l.annual || 0) / 12; cats[l.category || 'Other'] = (cats[l.category || 'Other'] || 0) + v; }
+  const b = monthlyBudget(data), mt = mortgageTotals(data), r = data.rules;
+  const cats = {}; for (const l of data.spending) { const v = l.linked === 'mortgage' ? mt.payment : (+l.annual || 0) / 12; cats[l.category || 'Other'] = (cats[l.category || 'Other'] || 0) + v; }
   const inc = data.income.map(i => row({ title: esc(i.name), sub: esc(person(i.owner)) + (i.growth ? ` · +${i.growth}% a year` : ''), value: amt(i.monthly), act: 'edit-income', arg: i.id })).join('');
   return {
     title: 'Plan', large: true, right: headerRight(),
@@ -641,7 +652,7 @@ function vPlan() {
       ${group(Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => row({ title: esc(c), value: amt(v), vsub: `${short(v * 12)} a year`, act: 'push', arg: 'spending:' + c })).join('') +
         row({ title: 'Buffer for the unexpected', value: `${data.bufferPct}%`, act: 'edit-buffer' }) + row({ title: 'Add spending', act: 'add-spend', cls: 'act-row', chev: false }), 'Spending (monthly)')}
       ${group(
-        row({ title: 'Mortgage', value: amt(m.payment), vsub: m.balance != null ? `${short(m.balance)} owed` : 'balance not set', act: 'push', arg: 'mortgage' }) +
+        row({ title: 'Mortgage', sub: mt.parts.length > 1 ? `${mt.parts.length} parts` : '', value: amt(mt.payment), vsub: mt.balance != null ? `${short(mt.balance)} owed` : 'balance not set', act: 'push', arg: 'mortgage' }) +
         row({ title: 'Upcoming payments and receipts', value: String(data.events.filter(e => e.on).length), act: 'push', arg: 'events' }), 'Commitments')}
       ${group(
         row({ title: 'Cash floor', value: amt(r.cashFloor), act: 'edit-rules' }) +
@@ -668,12 +679,12 @@ function saveHelp() {
 }
 
 function vSpending(cat) {
-  const m = data.mortgage;
+  const mPay = mortgageTotals(data).payment;
   const l = data.spending.filter(x => (x.category || 'Other') === cat);
   return {
     title: cat, large: true, back: 'Plan',
     body: group(l.map(x => {
-      const mon = x.linked === 'mortgage' ? +m.payment || 0 : (+x.annual || 0) / 12;
+      const mon = x.linked === 'mortgage' ? mPay : (+x.annual || 0) / 12;
       return row({ title: esc(x.name), sub: x.linked === 'mortgage' ? 'Set on the mortgage page' : x.inflates ? 'Rises with inflation' : 'Fixed', value: amt(mon), vsub: `${short(mon * 12)} a year`, act: x.linked === 'mortgage' ? 'push' : 'edit-spend', arg: x.linked === 'mortgage' ? 'mortgage' : x.id });
     }).join('') + row({ title: 'Add to ' + esc(cat), act: 'add-spend', arg: cat, cls: 'act-row', chev: false }), 'Monthly'),
   };
@@ -690,27 +701,65 @@ function vEvents() {
   };
 }
 
+// The mortgage can have parts (sub-accounts), each with its own rate, fix and term.
+// With one part the screen shows its details directly, as before; with more it lists them.
+function partDetails(p, i) {
+  const fix = p.fixEnd ? Math.max(0, ymKeyOf(p.fixEnd) - ymKeyOf(todayISO())) : null;
+  const e = { act: 'edit-part', arg: p.id };
+  return row({ title: 'Monthly payment', value: amt(+p.payment || 0), ...e }) +
+    row({ title: 'Balance owed', value: p.balance != null ? amt(p.balance) : 'Not set', ...e }) +
+    row({ title: 'Current rate', value: p.rate != null ? `${p.rate}%` : 'Not set', ...e }) +
+    row({ title: 'Fixed until', value: p.fixEnd ? fMonth(p.fixEnd) : 'Not set', vsub: fix != null ? `${fix} months away` : '', ...e }) +
+    row({ title: 'Rate after the fix', value: p.newRate != null ? `${p.newRate}%` : 'Not set', ...e }) +
+    row({ title: 'Ends', value: p.termEnd ? fMonth(p.termEnd) : 'Not set', ...e });
+}
+// What the projection says about one part: its balance at the end, and its payment once the fix ends.
+function partOutlook(pr, p) {
+  const end = pr.rows.at(-1).mortgageParts.find(x => x.id === p.id);
+  const full = p.balance != null && p.rate != null;
+  const after = full && p.fixEnd && p.newRate != null && p.termEnd ? pr.rows.find(r => r.date >= p.fixEnd)?.mortgageParts.find(x => x.id === p.id)?.pay : null;
+  return { full, endBal: end ? end.bal : null, after };
+}
 function vMortgage() {
-  const m = data.mortgage;
+  const m = data.mortgage, mt = mortgageTotals(data), parts = m.parts, one = parts.length === 1;
   const pr = project(data, scenarioKey(), horizon()), end = pr.rows.at(-1);
-  const full = m.balance != null && m.rate != null;
-  const eq = m.propertyValue && m.balance != null ? m.propertyValue - m.balance : null;
-  const fix = m.fixEnd ? Math.max(0, ymKeyOf(m.fixEnd) - ymKeyOf(todayISO())) : null;
-  const newPay = full && m.fixEnd && m.newRate != null && m.termEnd ? pr.rows.find(r => r.date >= m.fixEnd)?.mortgagePay : null;
+  const eq = m.propertyValue && mt.balance != null ? m.propertyValue - mt.balance : null;
+  const home = row({ title: 'Home value', value: m.propertyValue ? amt(m.propertyValue) : 'Not set', act: 'edit-home' });
+  const addPart = row({ title: 'Add a part', act: 'add-part', cls: 'act-row', chev: false });
+  let body, outlook = '';
+  if (one) {
+    const o = partOutlook(pr, parts[0]);
+    body = group(partDetails(parts[0], 0) + home, 'Details') +
+      group(addPart, null, 'If your mortgage is split into parts with their own rate or end date, for example after borrowing more, add each one so they run down separately.');
+    if (o.full) outlook = row({ title: `Balance by ${fMonth(end.date)}`, value: amt(end.mortgageBal) }) +
+      (o.after ? row({ title: 'Payment after the fix', value: amt(o.after), vsub: chg(o.after - (+parts[0].payment || 0)) + ' a month' }) : '');
+  } else {
+    body = group(parts.map((p, i) => row({
+      title: esc(partName(p, i)), value: amt(+p.payment || 0),
+      sub: [p.balance != null ? `${short(p.balance)} owed` : 'Flat payment', p.rate != null ? `${p.rate}%` : '', p.fixEnd ? `fixed to ${fMonth(p.fixEnd, true)}` : ''].filter(Boolean).join(' · '),
+      act: 'push', arg: 'mpart:' + p.id,
+    })).join('') + addPart, 'Parts') +
+      group(row({ title: 'Total owed', value: mt.balance != null ? amt(mt.balance) : 'Not set', vsub: mt.balance != null && !mt.allBalances ? 'some parts have no balance' : '' }) + home, 'Totals');
+    if (end.mortgageBal != null) outlook = row({ title: `Balance by ${fMonth(end.date)}`, value: amt(end.mortgageBal) }) +
+      parts.map((p, i) => { const o = partOutlook(pr, p); return o.after ? row({ title: `${esc(partName(p, i))} after its fix`, sub: fMonth(p.fixEnd), value: amt(o.after), vsub: chg(o.after - (+p.payment || 0)) + ' a month' }) : ''; }).join('');
+  }
+  const anyFull = parts.some(p => p.balance != null && p.rate != null);
   return {
-    title: 'Mortgage', large: true, back: 'Plan', right: `<button class="pill" data-act="edit-mortgage" style="color:var(--accent)">Edit</button>`,
-    body: `<div class="hero"><div class="cap">Monthly payment</div><div class="big amt">${money(m.payment, { dp: 0 }).replace('£', '<span class="p">£</span>')}</div>${eq != null ? `<div class="eq">Home equity ${amt(eq)}</div>` : ''}</div>
-      ${group(
-        row({ title: 'Balance owed', value: m.balance != null ? amt(m.balance) : 'Not set', act: 'edit-mortgage' }) +
-        row({ title: 'Current rate', value: m.rate != null ? `${m.rate}%` : 'Not set', act: 'edit-mortgage' }) +
-        row({ title: 'Fixed until', value: m.fixEnd ? fMonth(m.fixEnd) : 'Not set', vsub: fix != null ? `${fix} months away` : '', act: 'edit-mortgage' }) +
-        row({ title: 'Rate after the fix', value: m.newRate != null ? `${m.newRate}%` : 'Not set', act: 'edit-mortgage' }) +
-        row({ title: 'Mortgage ends', value: m.termEnd ? fMonth(m.termEnd) : 'Not set', act: 'edit-mortgage' }) +
-        row({ title: 'Home value', value: m.propertyValue ? amt(m.propertyValue) : 'Not set', act: 'edit-mortgage' }), 'Details')}
-      ${full ? group(
-        row({ title: `Balance by ${fMonth(end.date)}`, value: amt(end.mortgageBal) }) +
-        (newPay ? row({ title: 'Payment after the fix', value: amt(newPay), vsub: chg(newPay - m.payment) + ' a month' }) : ''), 'Projection') : ''}
-      <p class="note">${full ? 'The projection runs the balance down month by month. If you set a rate after the fix and an end date, the payment is recalculated when the fix ends and flows into your monthly surplus.' : 'Add the balance and rate to see the balance fall over time, and a post-fix rate to model a remortgage. Until then, the payment above is used as a flat monthly cost.'}</p>`,
+    title: 'Mortgage', large: true, back: 'Plan', right: one ? `<button class="pill" data-act="edit-part" data-arg="${esc(parts[0].id)}" style="color:var(--accent)">Edit</button>` : '',
+    body: `<div class="hero"><div class="cap">Monthly payment${one ? '' : `, ${parts.length} parts`}</div><div class="big amt">${money(mt.payment, { dp: 0 }).replace('£', '<span class="p">£</span>')}</div>${eq != null ? `<div class="eq">Home equity ${amt(eq)}</div>` : ''}</div>
+      ${body}${outlook ? group(outlook, 'Projection') : ''}
+      <p class="note">${anyFull ? `The projection runs ${one ? 'the balance' : 'each part'} down month by month. If you set a rate after the fix and an end date, the payment is recalculated when the fix ends and flows into your monthly surplus.${one ? '' : ' A part that is paid off stops costing anything.'}` : `Add the balance and rate to see the balance fall over time, and a post-fix rate to model a remortgage. Until then, the payment${one ? '' : 's'} above ${one ? 'is' : 'are'} used as a flat monthly cost.`}</p>`,
+  };
+}
+function vMortgagePart(id) {
+  const parts = data.mortgage.parts, i = parts.findIndex(p => p.id === id), p = parts[i];
+  if (!p) { ui.stacks[ui.tab].pop(); return currentView(); }
+  const pr = project(data, scenarioKey(), horizon()), o = partOutlook(pr, p), end = pr.rows.at(-1);
+  return {
+    title: partName(p, i), large: true, back: 'Mortgage', right: `<button class="pill" data-act="edit-part" data-arg="${esc(p.id)}" style="color:var(--accent)">Edit</button>`,
+    body: `<div class="hero"><div class="cap">Monthly payment</div><div class="big amt">${money(+p.payment || 0, { dp: 0 }).replace('£', '<span class="p">£</span>')}</div></div>
+      ${group(partDetails(p, i), 'Details')}
+      ${o.full ? group(row({ title: `Balance by ${fMonth(end.date)}`, value: amt(o.endBal) }) + (o.after ? row({ title: 'Payment after the fix', value: amt(o.after), vsub: chg(o.after - (+p.payment || 0)) + ' a month' }) : ''), 'Projection') : ''}`,
   };
 }
 
@@ -872,15 +921,29 @@ function eventSheet(id) {
     },
   });
 }
-function mortgageSheet() {
-  const m = data.mortgage;
+function partSheet(id) {
+  const parts = data.mortgage.parts, p = id ? parts.find(x => x.id === id) : null;
+  const multi = parts.length > 1 || !p;
   formSheet({
-    title: 'Mortgage', values: m,
-    sections: [{ fields: [{ key: 'payment', label: 'Monthly payment', type: 'money' }, { key: 'balance', label: 'Balance owed', type: 'money', optional: true }, { key: 'rate', label: 'Current rate', type: 'percent', unit: '%', optional: true }] },
-    { head: 'Remortgage', fields: [{ key: 'fixEnd', label: 'Fixed until', type: 'date', optional: true }, { key: 'newRate', label: 'Rate after the fix', type: 'percent', unit: '%', optional: true }, { key: 'termEnd', label: 'Mortgage ends', type: 'date', optional: true }] },
-    { head: 'Home', fields: [{ key: 'propertyValue', label: 'Estimated value', type: 'money', optional: true }] }],
-    onSave: v => { Object.assign(m, v); changed('Mortgage saved'); },
+    title: p ? (multi ? partName(p, parts.indexOf(p)) : 'Mortgage') : 'New part', values: p || { name: `Part ${parts.length + 1}`, payment: null },
+    sections: [{ fields: [...(multi ? [{ key: 'name', label: 'Name', type: 'text', ph: 'e.g. Further advance' }] : []), { key: 'payment', label: 'Monthly payment', type: 'money' }, { key: 'balance', label: 'Balance owed', type: 'money', optional: true }, { key: 'rate', label: 'Current rate', type: 'percent', unit: '%', optional: true }] },
+    { head: 'Remortgage', fields: [{ key: 'fixEnd', label: 'Fixed until', type: 'date', optional: true }, { key: 'newRate', label: 'Rate after the fix', type: 'percent', unit: '%', optional: true }, { key: 'termEnd', label: 'Ends', type: 'date', optional: true }] }],
+    extra: p && parts.length > 1 ? destructive('Delete this part', 'delete') : '',
+    onSave: (v, act) => {
+      if (act === 'delete') {
+        if (!confirm(`Delete ${partName(p, parts.indexOf(p))}? Its payment comes out of your spending.`)) return;
+        data.mortgage.parts = parts.filter(x => x !== p);
+        if (ui.stacks[ui.tab].at(-1) === 'mpart:' + p.id) ui.stacks[ui.tab].pop();
+        return changed('Part deleted');
+      }
+      if (p) { Object.assign(p, v); return changed('Mortgage saved'); }
+      if (parts.length === 1 && !parts[0].name) parts[0].name = 'Part 1'; // the original part needs a name once there are two
+      parts.push({ id: uid('mp'), ...v }); changed('Part added');
+    },
   });
+}
+function homeSheet() {
+  formSheet({ title: 'Home', values: data.mortgage, sections: [{ foot: 'Used to show your home equity: value less everything owed on the mortgage.', fields: [{ key: 'propertyValue', label: 'Estimated value', type: 'money', optional: true }] }], onSave: v => { data.mortgage.propertyValue = v.propertyValue; changed('Home value saved'); } });
 }
 function rulesSheet() {
   const r = data.rules;
@@ -913,7 +976,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -957,7 +1020,7 @@ const actions = {
   'add-income': () => incomeSheet(null), 'edit-income': incomeSheet,
   'add-spend': c => spendSheet(null, c), 'edit-spend': id => spendSheet(id),
   'add-event': () => eventSheet(null), 'edit-event': eventSheet,
-  'edit-mortgage': mortgageSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
+  'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),
   'del-snap': d => { if (!confirm(`Delete the update from ${fDate(d)}?`)) return; data.snapshots = data.snapshots.filter(s => s.date !== d); ui.stacks[ui.tab].pop(); changed('Update deleted'); },
 };

@@ -27,9 +27,18 @@ All reading and writing of the finance file goes through `storage.js`; `app.js` 
 ## Data file shape (version 1)
 `people[]`, `accounts[] {id,name,owner,type,rate,active,note}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
 `income[] {name,owner,monthly,growth}`, `spending[] {name,category,annual,inflates,linked?}`, `bufferPct`,
-`events[] {name,amount,date,on,settles?}`, `mortgage {payment,balance,rate,fixEnd,newRate,termEnd,propertyValue}`,
+`events[] {name,amount,date,on,settles?}`, `mortgage {propertyValue, parts[] {id,name,payment,balance,rate,fixEnd,newRate,termEnd}}`,
 `rules {cashFloor,isaAllowance,isaUsed,isaUsedTaxYear,sweepToSS}`, `scenarios{key:{name,growth,ssReturn,inflation,payRise}}`, `scenario`, `horizonMonths`.
 Account types: ss_isa, cash_isa, savings, current, card, card_0, tax. Cash pool = current + card. ISA pot = ss_isa + cash_isa.
+
+## Mortgage parts (Sep 2026)
+A mortgage is a list of **parts** (UK sub-accounts: e.g. the original loan plus a further advance), each with its own payment, balance, rate, fix and term; `propertyValue` stays on the mortgage because there is one home.
+- **Older files hold one flat mortgage.** `normalise()` turns it into a single part (`id:"main"`) and moves `propertyValue` up; `engine.js`'s `mortgageParts()` reads the flat shape too, so the engine works on either. Always go through `mortgageParts()` / `mortgageTotals()`, never `data.mortgage.payment`.
+- Each part runs on its own in `project()`: interest at its rate, a payment recalculated by annuity when *its* fix ends. `rows[].mortgageParts` has the per-part figures; the old `mortgagePay/Interest/Bal` are the totals.
+- **One behaviour change:** a part whose balance reaches zero now stops costing anything, so its payment leaves the spending. Before, a paid-off mortgage kept charging its payment for ever. For every mortgage not paid off within the horizon the figures are identical to the previous engine (checked on 20,880 figures across six single-mortgage cases over 120 months).
+- The mortgage is only counted in spending through a spending line with `linked:"mortgage"`, as before.
+- With one part the screen shows its details as it always did; the list appears from the second part on, and the original is named "Part 1" at that point.
+- `node tests/mortgage.test.js` - expectations worked out by hand from the rule.
 
 ## Projection rules (from the original spreadsheet)
 Monthly: cash + surplus + one-off items. Above the cash floor → sweep into ISAs up to (new allowance + flexible re-deposit room). Below → withdraw from ISAs (cash ISAs first); withdrawals add re-deposit room for the rest of that tax year. Allowance resets each April. Growth optional per scenario.
