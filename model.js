@@ -26,8 +26,15 @@
 // Version 4 (Sep 2026):
 //   rules.remortgage - remortgage planning settings: {leadMonths, decideMonths, earmarkMonths, warnAt,
 //              glide, glideMonths, target}. See readiness() in engine.js.
+//
+// Version 5 (Sep 2026):
+//   remortgageOptions[] - deals being weighed up for a mortgage part (see amortise() in engine.js).
+//   scenarios[k].option - the option this scenario assumes is taken (null = the part's own rate after the fix).
+//   scenarios[k].bundles - {bundleId: true|false} life events this scenario switches on or off; absent = as the event is set.
+//   scenarios[k].rateShift - percentage points added to tracker rates and rates after a new fix, in this scenario.
+//   A scenario is therefore a whole plan: assumptions + which events + which remortgage option.
 const TallyModel = (() => {
-  const VERSION = 4;
+  const VERSION = 5;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -98,6 +105,8 @@ const TallyModel = (() => {
     const d = (+src.version || 1) < 2 ? fromV1(src) : clone(src);
     d.flows ||= [];
     d.bundles ||= [];
+    d.remortgageOptions ||= [];
+    for (const k in d.scenarios || {}) { const sc = d.scenarios[k]; sc.option ??= null; sc.bundles ||= {}; sc.rateShift ??= 0; }
     for (const b of d.bundles) { b.on ??= true; b.scale ??= 1; b.contingency ??= 0; }
     for (const f of d.flows) { f.start ??= null; f.end ??= null; f.bundle ??= null; f.on ??= true; f.inflates ??= false; f.growth ??= 0; }
     (d.accounts || []).forEach(defaultAccess);
@@ -125,13 +134,15 @@ const TallyModel = (() => {
 
   // The flows the projection should use: life events that are off are dropped, and each event's
   // scale and contingency applied. Flows not in an event (or in one that no longer exists) pass through.
-  function effectiveFlows(d) {
+  // A scenario (optional) can switch an event on or off for itself; otherwise the event's own switch decides.
+  const bundleOn = (b, sc) => (sc && sc.bundles && sc.bundles[b.id] != null ? !!sc.bundles[b.id] : b.on !== false);
+  function effectiveFlows(d, sc) {
     const by = Object.fromEntries((d.bundles || []).map(b => [b.id, b]));
     const out = [];
     for (const f of d.flows || []) {
       const b = f.bundle && by[f.bundle];
       if (!b) { out.push(f); continue; }
-      if (b.on === false) continue;
+      if (!bundleOn(b, sc)) continue;
       const cost = f.kind === 'spend' || (f.kind === 'oneoff' && f.amount < 0);
       const k = (+b.scale || 0) * (cost ? 1 + (+b.contingency || 0) / 100 : 1);
       out.push(k === 1 ? f : { ...f, amount: (+f.amount || 0) * k });
@@ -156,7 +167,7 @@ const TallyModel = (() => {
     return { from: starts[0] || null, to: open ? null : ends.at(-1) };
   }
 
-  return { VERSION, REMORTGAGE, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
+  return { VERSION, REMORTGAGE, bundleOn, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyModel;

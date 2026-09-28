@@ -42,6 +42,34 @@ function mortgageTotals(data) {
   };
 }
 
+// ---------- remortgage options (Phase 1.4) ----------
+// An option replaces a part's deal from the month its current fix ends:
+//   {id, partId, name, type:'fixed'|'tracker', rate, fixMonths, fee, feeAdded, lump, regular, capPct, termMonths, afterRate}
+// A tracker has no fix: its rate (+ the scenario's rateShift) applies throughout. A fixed deal moves to
+// afterRate (+ rateShift) when its fix ends. lump comes off the balance at the switch; regular is a monthly
+// overpayment, capped at capPct % of the balance at the start of each deal year (the lender's penalty-free
+// allowance, often 10%). A fee added to the loan accrues interest with it.
+// amortise() is the pure month-by-month maths; project() applies the same rules inside the household.
+const capPctOf = o => (o.capPct != null && o.capPct !== '' ? +o.capPct : 10);
+function amortise(o, bal, months, shift = 0) {
+  let b = Math.max(0, bal - (+o.lump || 0)) + (o.feeAdded ? +o.fee || 0 : 0);
+  const term = Math.max(1, Math.round(+o.termMonths || 300));
+  const fixM = o.type === 'tracker' ? 0 : Math.max(0, Math.round(+o.fixMonths || 0));
+  const r0 = (+o.rate || 0) + (o.type === 'tracker' ? shift : 0), r1 = (o.afterRate != null && o.afterRate !== '' ? +o.afterRate : +o.rate || 0) + shift;
+  let pay = annuity(b, r0, term), interest = 0, overpaid = 0, capLeft = 0;
+  const first = pay, out = [];
+  for (let m = 0; m < months && b > 0.004; m++) {
+    if (fixM && m === fixM) pay = annuity(b, r1, term - m);
+    if (m % 12 === 0) capLeft = b * capPctOf(o) / 100;
+    const rate = fixM && m >= fixM ? r1 : r0;
+    const i = b * rate / 100 / 12, paid = Math.min(pay, b + i);
+    b = b + i - paid;
+    const over = Math.min(+o.regular || 0, capLeft, b); b -= over; capLeft -= over;
+    interest += i; overpaid += over; out.push({ m, interest: i, paid, over, bal: b });
+  }
+  return { payment: first, interest, overpaid, balance: b, months: out, fees: +o.fee || 0, upfront: (+o.lump || 0) + (o.feeAdded ? 0 : +o.fee || 0) };
+}
+
 function latestSnapshot(data) {
   const s = [...data.snapshots].sort((a, b) => a.date.localeCompare(b.date));
   return s[s.length - 1] || null;
@@ -111,6 +139,11 @@ function project(data, scenarioKey, months) {
     rate: isSet(p.rate) ? +p.rate : null, newRate: isSet(p.newRate) ? +p.newRate : null, fixEndK: mk(p.fixEnd), termEndK: mk(p.termEnd),
   }));
   const anyBal = parts.some(p => p.bal != null);
+  // The scenario's chosen remortgage option (1.6), applied to its part from the part's fix end.
+  const opt = sc.option ? (data.remortgageOptions || []).find(o => o.id === sc.option) : null;
+  const optPart = opt ? parts.find(p => p.id === opt.partId && p.fixEndK != null && p.bal != null) : null;
+  const optK = optPart ? optPart.fixEndK : null;
+  const shift = +sc.rateShift || 0;
 
   // Remortgage planning (Phase 1.3). F = the month the earliest part's fix ends (from the start month on).
   // Glide path: in the N months before F, top-ups go only to instant-access cash ISAs, never S&S.
@@ -122,7 +155,7 @@ function project(data, scenarioKey, months) {
   // ISA allowance is per person. Top-ups fill people in r.isaFillOrder: the first person's allowance
   // is used up before the next person's. Re-deposit room (money taken out of a flexible ISA, which can
   // go back in the same tax year without new allowance) is tracked for the household.
-  const flows = EM.effectiveFlows(data); // life events applied: off ones dropped, scale and contingency in
+  const flows = EM.effectiveFlows(data, sc); // life events applied (as this scenario has them): off ones dropped, scale and contingency in
   let ty = taxYearOf(k0);
   const who = r.isaFillOrder && r.isaFillOrder.length ? r.isaFillOrder : ['M'];
   const per = +r.isaPerPerson || 0;
@@ -176,16 +209,33 @@ function project(data, scenarioKey, months) {
 
     // mortgage: a part with a balance and rate runs down month by month; one without is a flat payment.
     // A part that is paid off stops costing anything, so its payment leaves the spending too.
+    let dealCash = 0; // money out of cash for the chosen option: a lump sum and fee at the switch, then overpayments
     const mParts = parts.map(p => {
-      let interest = 0, paid = p.pay;
+      let interest = 0, paid = p.pay, over = 0;
+      if (p === optPart && k === optK) {
+        const lump = Math.min(+opt.lump || 0, p.bal);
+        p.bal = p.bal - lump + (opt.feeAdded ? +opt.fee || 0 : 0);
+        dealCash += lump + (opt.feeAdded ? 0 : +opt.fee || 0);
+        const term = opt.termMonths ? Math.round(+opt.termMonths) : (p.termEndK != null ? p.termEndK - k : 300);
+        p.termEndK = k + Math.max(1, term);
+        p.rate = (+opt.rate || 0) + (opt.type === 'tracker' ? shift : 0);
+        p.fixEndK = opt.type === 'tracker' ? null : k + Math.max(0, Math.round(+opt.fixMonths || 0));
+        p.newRate = (opt.afterRate != null && opt.afterRate !== '' ? +opt.afterRate : +opt.rate || 0) + shift;
+        p.pay = annuity(p.bal, p.rate, p.termEndK - k);
+        p.deal = { from: k, regular: +opt.regular || 0, capPct: capPctOf(opt), capLeft: 0 };
+      }
       if (p.bal != null && p.rate != null) {
         if (p.fixEndK != null && k === p.fixEndK && p.newRate != null && p.termEndK != null) p.pay = annuity(p.bal, p.newRate, p.termEndK - k);
         const rate = p.fixEndK != null && k >= p.fixEndK && p.newRate != null ? p.newRate : p.rate;
         interest = p.bal * rate / 100 / 12;
         paid = Math.min(p.pay, p.bal + interest);
         p.bal = Math.max(0, p.bal + interest - paid);
+        if (p.deal) {
+          if ((k - p.deal.from) % 12 === 0) p.deal.capLeft = p.bal * (+p.deal.capPct) / 100;
+          over = Math.min(p.deal.regular, p.deal.capLeft, p.bal); p.bal -= over; p.deal.capLeft -= over; dealCash += over;
+        }
       }
-      return { id: p.id, name: p.name, pay: paid, interest, bal: p.bal };
+      return { id: p.id, name: p.name, pay: paid, interest, bal: p.bal, over };
     });
     const mPay = mParts.reduce((s, p) => s + p.pay, 0), mortgageInterest = mParts.reduce((s, p) => s + p.interest, 0);
     const mBal = anyBal ? mParts.reduce((s, p) => s + (p.bal || 0), 0) : null;
@@ -214,7 +264,7 @@ function project(data, scenarioKey, months) {
     for (const e of evs) if (e.settles && other[e.settles] != null) other[e.settles] = 0;
 
     const opening = cash;
-    const before = opening + surplus + payments + receipts;
+    const before = opening + surplus + payments + receipts - dealCash;
     const freshStart = fresh, replStart = repl, cap = fresh + repl;
     let topUp = 0, withdraw = 0, shortfall = 0;
     const floor = +r.cashFloor || 0;
@@ -260,7 +310,7 @@ function project(data, scenarioKey, months) {
       freshStart, replStart, cap, freshEnd: fresh, freshBy: { ...freshBy }, replEnd: repl, taxYear: tyNow,
       isaSS, isaCash: isaCash + heldTotal, isaCashFlex: isaCash, isa: isaSS + isaCash + heldTotal, growth, other: otherTotal,
       byAccess, earmark: sumBy(earmarkBy), earmarkBy,
-      mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgageParts: mParts,
+      mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgageParts: mParts, dealCash,
       net: cash + isaSS + isaCash + heldTotal + otherTotal,
     });
   }
@@ -310,4 +360,46 @@ function readiness(data, scenarioKey, today) {
   };
 }
 
-if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, mortgageParts, mortgageTotals, readiness, GROUPS };
+// Run the projection as scenario sk, but with some settings changed, without touching data.
+function projectAs(data, sk, change, months) {
+  const sc = { ...data.scenarios[sk || data.scenario], ...change };
+  return project({ ...data, scenarios: { ...data.scenarios, __as: sc } }, '__as', months);
+}
+
+// ---------- compare remortgage options (Phase 1.4) ----------
+// For the part whose fix ends first: each option for it, plus "do nothing" (the part's own rate after the
+// fix), run through the whole household projection, measured over `windowMonths` from the switch.
+function compareOptions(data, sk, windowMonths = 60, today) {
+  const R = readiness(data, sk, today);
+  if (R.none) return { none: R.none };
+  const snap = latestSnapshot(data), k0 = ymKey(ym(snap.date).y, ym(snap.date).m);
+  const F = EM.monthKey(EM.month(R.fixEnd)), months = F - k0 + windowMonths;
+  const pi = mortgageParts(data).findIndex(p => p.id === R.part.id);
+  const opts = [{ id: null, name: 'Do nothing', note: 'Move to the rate after your fix' }, ...(data.remortgageOptions || []).filter(o => o.partId === R.part.id)];
+  const results = opts.map(o => {
+    const rows = projectAs(data, sk, { option: o.id }, months).rows;
+    const win = rows.filter(r => r.k >= F && r.k < F + windowMonths), last = win.at(-1), part = r => r.mortgageParts[pi];
+    const interest = win.reduce((s, r) => s + part(r).interest, 0), overpaid = win.reduce((s, r) => s + part(r).over, 0);
+    const fee = o.id ? +o.fee || 0 : 0, lowest = win.reduce((b, r) => (r.closing < b.closing ? r : b), win[0]);
+    return {
+      option: o, payment: part(win[0]).pay, interest, fee, totalCost: interest + fee, overpaid, lump: o.id ? +o.lump || 0 : 0,
+      balance: part(last).bal, accessible: last.byAccess.instant + last.byAccess.notice, net: last.net, lowestCash: lowest.closing, lowestMonth: lowest.date,
+    };
+  });
+  const before = project(data, sk, Math.max(1, F - k0)).rows.find(r => r.k === F - 1);
+  const balAtSwitch = before ? before.mortgageParts[pi].bal : (+R.part.balance || 0);
+  const cashIsaRate = project(data, sk, 1).cashIsaRate;
+  // months left on the part's term at the switch: what an option with no term of its own runs over
+  const termLeft = R.part.termEnd ? Math.max(1, EM.monthKey(EM.month(R.part.termEnd)) - F) : 300;
+  return { R, part: R.part, partIndex: pi, termLeft, switchDate: R.fixEnd, windowMonths, endDate: keyToDate(F + windowMonths - 1), results, balAtSwitch, cashIsaRate };
+}
+// Payment and cost of one option at its rate and at ±0.5% and ±1% (pure amortisation, no household).
+function rateGrid(o, bal, months = 60, termLeft = 300, shifts = [-1, -0.5, 0, 0.5, 1]) {
+  return shifts.map(d => { const a = amortise({ ...o, termMonths: o.termMonths || termLeft, rate: (+o.rate || 0) + d, afterRate: (o.afterRate != null && o.afterRate !== '' ? +o.afterRate : +o.rate || 0) + d }, bal, months); return { shift: d, payment: a.payment, cost: a.interest + a.fees }; });
+}
+// "Available to overpay" if the switch were in month k: instant + notice − floor − the next `em` months' earmarks.
+function availableSeries(rows, floor, em = 12) {
+  return rows.map((r, i) => r.byAccess.instant + r.byAccess.notice - floor - rows.slice(i + 1, i + 1 + em).reduce((s, x) => s + x.earmark, 0));
+}
+
+if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, compareOptions, rateGrid, availableSeries, GROUPS };

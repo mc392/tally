@@ -134,6 +134,8 @@ An optional rule that changes how the projection saves as the decision nears.
 - If it can't be met, the screen shows the shortfall and the month it clears.
 
 ### 1.4 Remortgage option comparison
+
+> **Status: done (28 Sep 2026).** "Do nothing" (the part's rate after the fix) is always a column. The overpay-or-keep-cash comparison uses each deal's rate against the weighted cash ISA rate.
 Put two to four options side by side at the decision point.
 
 **Inputs for each option**
@@ -202,6 +204,8 @@ Pre-built, editable templates that add a bundle of dated flows in one go. Each b
 - The baby template's income dip and childcare start show in the correct months.
 
 ### 1.6 Scenario comparison
+
+> **Status: done (28 Sep 2026).** Up to three plans; a plan can switch life events on or off for itself without changing them elsewhere, and adds a rate change for trackers and post-fix rates.
 Compare whole plans, not just growth assumptions.
 
 **What Matt sees**

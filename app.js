@@ -625,7 +625,7 @@ function vProjection() {
       ${short_.length ? group(short_.map(r => row({ title: fMonth(r.date), sub: 'ISAs can’t cover the floor', value: amt(-r.shortfall, { color: true }), act: 'push', arg: 'month:' + r.k })).join(''), 'Shortfalls') : ''}
       ${group(Object.entries(tys).map(([y, t]) => row({ title: `${y}/${String(+y + 1).slice(2)}`, sub: `In ${short(t.in)} · out ${short(t.out)}`, value: amt(t.left), vsub: 'allowance left' })).join(''), 'ISA allowance by tax year', `Uses ${money(data.rules.isaPerPerson)} each for ${esc(data.rules.isaFillOrder.map(person).join(' and '))}, filling ${esc(person(data.rules.isaFillOrder[0]))}’s first. Money taken out of a flexible ISA can be put back in the same tax year without using new allowance; the projection tracks that separately.`)}
       ${group(months, 'Month by month', 'Tap a month for the full cash waterfall and ISA workings.')}
-      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
+      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Compare plans', sub: 'Two or three scenarios side by side', act: 'push', arg: 'plans' }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
     after: () => { mountChart('c-proj'); mountChart('c-cash'); },
   };
 }
@@ -640,7 +640,7 @@ function vMonth(k) {
     title: fMonth(r.date), large: true, back: 'Projection',
     body: `<div class="subtitle">${esc(data.scenarios[scenarioKey()].name)} scenario · tax year ${r.taxYear}/${String(r.taxYear + 1).slice(2)}</div>
       <div class="wf">${group(
-        line('Opening cash', r.opening) + line('Take-home pay', r.income, { sign: true }) + line('Regular spending', -r.spend, { sign: true }) + line(`Buffer (${data.bufferPct}%)`, -r.buffer, { sign: true }) + evRows + line('Cash before ISA moves', r.before, { total: true }),
+        line('Opening cash', r.opening) + line('Take-home pay', r.income, { sign: true }) + line('Regular spending', -r.spend, { sign: true }) + line(`Buffer (${data.bufferPct}%)`, -r.buffer, { sign: true }) + evRows + (r.dealCash > 0.5 ? line('Remortgage: lump sum, fee and overpayments', -r.dealCash, { sign: true }) : '') + line('Cash before ISA moves', r.before, { total: true }),
         'Cash waterfall')}
       ${group(
         (r.topUp > .5 ? line('Moved into ISAs', -r.topUp, { sign: true, sub: 'Cash above your floor, up to the allowance' }) : '') +
@@ -671,8 +671,32 @@ function vScenario(key) {
       row({ title: 'Spending inflation', value: `${s.inflation}% a year`, act: 'edit-scenario', arg: key }) +
       row({ title: 'Pay rises', value: `${s.payRise}% a year`, act: 'edit-scenario', arg: key }), 'Assumptions',
       'Inflation and pay rises step up each April. Interest on cash ISAs and savings uses the rate on each account. Growth is added monthly.')}
+      ${group(
+        row({ title: 'Remortgage option', value: esc(optName(s.option)), act: 'edit-scplan', arg: key }) +
+        row({ title: 'Rates after a new fix, and trackers', value: `${(+s.rateShift || 0) > 0 ? '+' : ''}${+s.rateShift || 0}%`, act: 'edit-scplan', arg: key }) +
+        (data.bundles.length ? row({ title: 'Life events', sub: data.bundles.map(b => `${esc(b.name)} ${TM.bundleOn(b, s) ? 'on' : 'off'}`).join(' · '), act: 'edit-scplan', arg: key }) : ''),
+        'The plan', 'A scenario is a whole plan: these assumptions, which life events happen, and which remortgage deal you take. Compare plans side by side from Projection.')}
       ${group(row({ title: 'Use as default', right: sw(data.scenario === key, 'sc-default', key) }), '', 'The default scenario is what Overview shows when you open the app.')}`,
   };
+}
+const optName = id => { const o = id && data.remortgageOptions.find(x => x.id === id); return o ? o.name : 'None: the rate after your fix'; };
+function scenarioPlanSheet(key) {
+  const s = data.scenarios[key];
+  const vals = { option: s.option || '', rateShift: +s.rateShift || 0 };
+  for (const b of data.bundles) vals['b_' + b.id] = s.bundles[b.id] == null ? '' : s.bundles[b.id] ? 'on' : 'off';
+  formSheet({
+    title: s.name, values: vals,
+    sections: [
+      { head: 'Remortgage', foot: 'The rate change is added to tracker rates and to the rate after any new fix ends, e.g. +1% to see higher rates.', fields: [
+        { key: 'option', label: 'Deal taken', type: 'select', options: [['', 'None: the rate after your fix'], ...data.remortgageOptions.map(o => [o.id, o.name])] },
+        { key: 'rateShift', label: 'Rate change', type: 'percent', unit: '%' }] },
+      ...(data.bundles.length ? [{ head: 'Life events', foot: '“As set” follows the switch on the event itself.', fields: data.bundles.map(b => ({ key: 'b_' + b.id, label: b.name, type: 'select', options: [['', `As set (${b.on ? 'on' : 'off'})`], ['on', 'On in this plan'], ['off', 'Off in this plan']] })) }] : [])],
+    onSave: v => {
+      s.option = v.option || null; s.rateShift = v.rateShift || 0;
+      for (const b of data.bundles) { const x = v['b_' + b.id]; if (x) s.bundles[b.id] = x === 'on'; else delete s.bundles[b.id]; }
+      changed('Plan saved');
+    },
+  });
 }
 
 // ---------- plan ----------
@@ -784,11 +808,106 @@ function vReady() {
         row({ title: `Less earmarked, ${R.earmarkMonths} months from the switch`, value: amt(-R.earmarks, { color: true }) }) +
         row({ title: 'Available to overpay', value: amt(R.available, { color: true }), cls: 'total' }), 'Available to overpay')}
       ${R.earmarkItems.length ? group(R.earmarkItems.map(x => row({ title: esc(x.label), sub: `from ${fMonth(x.first)}`, value: amt(-x.amount, { color: true }) })).join(''), 'Earmarked', 'One-off payments, and the costs and pay drops of life events, in the months after the switch.') : ''}
+      ${group(data.remortgageOptions.filter(o => o.partId === R.part.id).map(o => row({ title: esc(o.name), sub: optSummary(o), act: 'edit-option', arg: o.id })).join('') +
+        row({ title: 'Add a deal to compare', act: 'add-option', cls: 'act-row', chev: false }) +
+        row({ title: 'Compare deals', sub: 'Side by side, with overpay-or-keep-cash and rate sensitivity', act: 'push', arg: 'compare' }), 'Deals you’re weighing up')}
       ${group(tgt + row({ title: 'Glide path', sub: rm.glide ? `For ${rm.glideMonths} months before the fix end, new savings are held as cash ISA, not S&S` : 'Off: top-ups follow your usual S&S split', value: rm.glide ? '<span class="pill ok">On</span>' : '<span class="pill">Off</span>', act: 'edit-remortgage' }), 'Getting ready')}
       ${R.laterParts.length ? `<p class="note">After this: ${R.laterParts.map(x => `${esc(partName(x.part, x.index))}’s fix ends ${fMonth(x.fixEnd)}`).join('; ')}. Its readiness appears here once this one has passed.</p>` : ''}
       <p class="note">Worked out in the ${esc(sc[sk].name)} scenario. Figures are projections, not advice.</p>`,
   };
 }
+const optSummary = o => [o.type === 'tracker' ? `Tracker ${o.rate}%` : `${o.rate}% fixed ${o.fixMonths >= 12 && o.fixMonths % 12 === 0 ? o.fixMonths / 12 + ' years' : o.fixMonths + ' months'}`, +o.fee ? `£${nf0.format(o.fee)} fee${o.feeAdded ? ' added' : ''}` : 'no fee', +o.lump ? `£${nf0.format(o.lump)} lump sum` : '', +o.regular ? `£${nf0.format(o.regular)} a month extra` : ''].filter(Boolean).join(' · ');
+function optionSheet(id) {
+  const R = readyNow(); if (!R) return toast('Set a fix end date on your mortgage first', true);
+  const o = id ? data.remortgageOptions.find(x => x.id === id) : { name: '', type: 'fixed', rate: null, fixMonths: 60, afterRate: R.part.newRate ?? null, fee: 999, feeAdded: false, lump: 0, regular: 0, capPct: 10, termMonths: null };
+  formSheet({
+    title: id ? o.name : 'New deal', values: o,
+    sections: [
+      { head: `For ${partName(R.part, R.partIndex)} from ${fMonth(R.fixEnd)}`, fields: [{ key: 'name', label: 'Name', type: 'text', ph: 'e.g. 5-year fix, Lender A' }, { key: 'type', label: 'Type', type: 'select', options: [['fixed', 'Fixed rate'], ['tracker', 'Tracker']] },
+        { key: 'rate', label: 'Rate', type: 'percent', unit: '%' }, { key: 'fixMonths', label: 'Fixed for', type: 'number', unit: 'months', hint: 'Fixed deals only, e.g. 60 for 5 years' },
+        { key: 'afterRate', label: 'Rate after the fix', type: 'percent', unit: '%', optional: true, hint: 'Usually the lender’s standard variable rate' }] },
+      { head: 'Costs', fields: [{ key: 'fee', label: 'Arrangement fee', type: 'money' }, { key: 'feeAdded', label: 'Add the fee to the loan', type: 'toggle', hint: 'Then it accrues interest; otherwise it is paid from cash' }] },
+      { head: 'Overpaying', foot: 'Most lenders let you overpay up to 10% of the balance a year without a charge; extra monthly payments are capped at your allowance.', fields: [{ key: 'lump', label: 'Lump sum at the switch', type: 'money' }, { key: 'regular', label: 'Extra each month', type: 'money' }, { key: 'capPct', label: 'Penalty-free allowance', type: 'percent', unit: '% a year' }] },
+      { head: 'Term', fields: [{ key: 'termMonths', label: 'Months left', type: 'number', optional: true, ph: 'Keep end date', hint: 'Fewer months pays it off sooner, with a higher payment' }] }],
+    extra: id ? destructive('Delete this deal', 'delete') : '',
+    onSave: (v, act) => {
+      if (act === 'delete') { data.remortgageOptions = data.remortgageOptions.filter(x => x.id !== id); for (const k in data.scenarios) if (data.scenarios[k].option === id) data.scenarios[k].option = null; return changed('Deal deleted'); }
+      if (!(v.rate > 0)) { toast('Enter the rate', true); return false; }
+      if (id) Object.assign(o, v); else data.remortgageOptions.push({ id: uid('opt'), partId: R.part.id, ...v, name: v.name || `Deal ${data.remortgageOptions.length + 1}` });
+      changed('Deal saved');
+    },
+  });
+}
+function vCompare() {
+  const W = ui.cmpWin || 60, sk = scenarioKey(), C = compareOptions(data, sk, W, thisMonth());
+  const head = { title: 'Compare deals', large: true, back: 'Readiness' };
+  if (C.none) return { ...head, body: '<p class="note">Set a fix end date on your mortgage first.</p>' };
+  const res = C.results, n = res.length;
+  const best = (f, low = true) => { const v = res.map(f); const b = low ? Math.min(...v) : Math.max(...v); return v.map(x => Math.abs(x - b) < 0.5); };
+  const line = (label, f, o = {}) => { const hi = o.best ? best(f, o.low !== false) : []; return `<tr><th>${label}</th>${res.map((r, i) => `<td class="${hi[i] && n > 1 ? 'best' : ''}">${o.fmt ? o.fmt(r) : money(f(r))}</td>`).join('')}</tr>`; };
+  const tbl = `<div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${res.map(r => `<th>${esc(r.option.name)}</th>`).join('')}</tr></thead><tbody>
+    ${line('Monthly payment', r => r.payment, { best: true })}
+    ${line('Total interest', r => r.interest, { best: true })}
+    ${line('Fees', r => r.fee)}
+    ${line('Total cost', r => r.totalCost, { best: true })}
+    ${line('Mortgage left', r => r.balance, { best: true })}
+    ${line('Accessible cash', r => r.accessible, { best: true, low: false })}
+    ${line('Net worth', r => r.net, { best: true, low: false })}
+    ${line('Lowest cash', r => r.lowestCash, { best: true, low: false, fmt: r => `${money(r.lowestCash)}<div class="sub">${fMonth(r.lowestMonth, true)}</div>` })}
+  </tbody></table></div>`;
+  const cisa = C.cashIsaRate;
+  const opts = res.filter(r => r.option.id);
+  const keep = opts.map(r => {
+    const rate = +r.option.rate, save = 10 * rate, earn = 10 * cisa, d = save - earn;
+    return row({ title: esc(r.option.name), sub: `Overpaying £1,000 saves about £${Math.round(save)} a year in interest at ${rate}%; kept in a cash ISA at ${cisa.toFixed(1)}% it earns about £${Math.round(earn)}.`, value: Math.abs(d) < 1 ? 'About even' : d > 0 ? 'Overpay' : 'Keep cash', vsub: Math.abs(d) < 1 ? '' : `by £${Math.round(Math.abs(d))} a year` });
+  }).join('');
+  const grids = opts.map(r => { const g = rateGrid(r.option, C.balAtSwitch, 60, C.termLeft); return `<div class="gh">${esc(r.option.name)}</div><div class="cmpwrap"><table class="cmp"><thead><tr><th>Rate</th>${g.map(x => `<th>${(+r.option.rate + x.shift).toFixed(2)}%</th>`).join('')}</tr></thead><tbody>
+      <tr><th>Payment</th>${g.map(x => `<td class="${x.shift === 0 ? 'best' : ''}">${money(x.payment)}</td>`).join('')}</tr>
+      <tr><th>5-year cost</th>${g.map(x => `<td class="${x.shift === 0 ? 'best' : ''}">${short(x.cost)}</td>`).join('')}</tr></tbody></table></div>`; }).join('');
+  return {
+    ...head,
+    body: `<div class="subtitle">${esc(partName(C.part, C.partIndex))} · switch ${fMonth(C.switchDate)} · ${short(C.balAtSwitch)} owed then</div>
+      <div class="chips">${[[24, '2 years'], [36, '3 years'], [60, '5 years']].map(([m, l]) => `<button class="${m === W ? 'on' : ''}" data-act="cmp-win" data-arg="${m}">${l}</button>`).join('')}</div>
+      <section class="card"><div class="gh">Over ${W / 12} years from the switch<b>to ${fMonth(C.endDate)}</b></div>${tbl}</section>
+      ${opts.length ? '' : '<p class="note">Add the deals you are considering on the readiness page to compare them with doing nothing.</p>'}
+      ${keep ? group(keep, 'Overpay or keep the cash?', 'Mortgage interest saved and cash ISA interest are both tax-free, so the rates compare directly. Money used to overpay can’t be taken back out, so keeping it has value of its own.') : ''}
+      ${grids ? `<section class="card">${grids}<p class="note" style="margin:10px 0 0">Payment when the deal starts, and interest plus fees over five years, at the rate and ±0.5% and ±1%.</p></section>` : ''}
+      <p class="note">Worked out in the ${esc(data.scenarios[sk].name)} scenario, through the whole household projection. Highlighted figures are the best in each row. Projections, not advice.</p>`,
+  };
+}
+
+// ---------- compare plans (1.6) ----------
+const SC_COLORS = ['var(--c-net)', 'var(--c-isa)', 'var(--c-cash)'];
+function vPlans() {
+  const keys = (ui.cmpSc || Object.keys(data.scenarios)).filter(k => data.scenarios[k]).slice(0, 3);
+  const H = Math.max(horizon(), 60), floor = +data.rules.cashFloor || 0, em = +data.rules.remortgage.earmarkMonths || 12;
+  const runs = keys.map(k => { const pr = project(data, k, H + em); return { k, sc: data.scenarios[k], rows: pr.rows.slice(0, H), av: availableSeries(pr.rows, floor, em).slice(0, H) }; });
+  if (!runs.length || !runs[0].rows.length) return { title: 'Compare plans', large: true, back: 'Projection', body: '<p class="note">Add your balances first.</p>' };
+  const T = r => monthEndT(r.date);
+  const ser = f => runs.map((u, i) => ({ name: u.sc.name, color: SC_COLORS[i], pts: u.rows.map((r, j) => ({ t: T(r), v: f(r, j, u) })) }));
+  const c1 = chart('c-pl-net', { series: ser(r => r.net), height: 150 });
+  const c2 = chart('c-pl-cash', { series: ser(r => r.closing), height: 120, floor });
+  const c3 = chart('c-pl-av', { series: ser((r, j, u) => u.av[j]), height: 120 });
+  const R = readyNow(), F = R ? ymKeyOf(R.fixEnd) : null, k0 = runs[0].rows[0].k;
+  const dates = [...(F != null ? [['At the fix end', F - 1]] : []), ['In 1 year', k0 + 11], ['In 3 years', k0 + 35]].filter(([, k]) => k - k0 < H);
+  const cell = (u, k, f) => { const j = u.rows.findIndex(r => r.k === k); return j < 0 ? null : f(u.rows[j], j, u); };
+  const metrics = [['Net worth', r => r.net], ['Cash', r => r.closing], ['Available to overpay', (r, j, u) => u.av[j]], ['Mortgage left', r => r.mortgageBal ?? 0]];
+  const table = dates.map(([label, k]) => `<tr class="sec"><th colspan="${runs.length + 1}">${label} · ${fMonth(runs[0].rows.find(r => r.k === k)?.date || runs[0].rows[0].date)}</th></tr>` + metrics.map(([m, f]) => {
+    const vals = runs.map(u => cell(u, k, f));
+    return `<tr><th>${m}</th>${vals.map((v, i) => `<td>${v == null ? '–' : money(v)}${i && v != null && vals[0] != null ? `<div class="sub">${money(v - vals[0], { sign: true })}</div>` : ''}</td>`).join('')}</tr>`;
+  }).join('')).join('');
+  return {
+    title: 'Compare plans', large: true, back: 'Projection',
+    body: `<div class="chips">${Object.entries(data.scenarios).map(([k, v]) => `<button class="${keys.includes(k) ? 'on' : ''}" data-act="cmp-sc" data-arg="${k}">${esc(v.name)}</button>`).join('')}</div>
+      <section class="card"><div class="gh">Net worth</div>${c1}<div class="legend">${runs.map((u, i) => `<span><i style="background:${SC_COLORS[i]}"></i>${esc(u.sc.name)}</span>`).join('')}</div></section>
+      <section class="card"><div class="gh">Cash held<b>floor ${amt(floor)}</b></div>${c2}</section>
+      <section class="card"><div class="gh">Available to overpay<b>if you switched that month</b></div>${c3}</section>
+      <section class="card"><div class="gh">Key dates<b>differences against ${esc(runs[0].sc.name)}</b></div><div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${runs.map(u => `<th>${esc(u.sc.name)}</th>`).join('')}</tr></thead><tbody>${table}</tbody></table></div></section>
+      ${group(runs.map(u => row({ title: esc(u.sc.name), sub: [u.sc.growth ? `S&S ${u.sc.ssReturn}% · inflation ${u.sc.inflation}%` : 'No growth', `deal: ${esc(optName(u.sc.option))}`, data.bundles.length ? `events: ${data.bundles.filter(b => TM.bundleOn(b, u.sc)).map(b => esc(b.name)).join(', ') || 'none'}` : ''].filter(Boolean).join(' · '), act: 'push', arg: 'scenario:' + u.k })).join(''), 'What each plan assumes', 'Tap a plan to change its assumptions, life events or remortgage deal. Pick up to three above.')}`,
+    after: () => { mountChart('c-pl-net'); mountChart('c-pl-cash'); mountChart('c-pl-av'); },
+  };
+}
+
 function remortgageSheet() {
   const rm = data.rules.remortgage;
   formSheet({
@@ -1211,7 +1330,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -1256,7 +1375,9 @@ const actions = {
   'add-spend': c => bundleArg(c) ? spendSheet(null, null, bundleArg(c)) : spendSheet(null, c), 'edit-spend': id => spendSheet(id),
   'add-event': a => eventSheet(null, bundleArg(a)), 'edit-event': id => eventSheet(id),
   'add-bundle': templatePicker, 'edit-bundle': bundleSheet,
-  'edit-remortgage': remortgageSheet, 'leak-ok': () => { ui.leak = null; render(); },
+  'edit-remortgage': remortgageSheet, 'add-option': () => optionSheet(null), 'edit-option': optionSheet, 'edit-scplan': scenarioPlanSheet,
+  'cmp-win': m => { ui.cmpWin = +m; render(); },
+  'cmp-sc': k => { const cur = (ui.cmpSc || Object.keys(data.scenarios)).filter(x => data.scenarios[x]); ui.cmpSc = cur.includes(k) ? (cur.length > 1 ? cur.filter(x => x !== k) : cur) : [...cur, k].slice(-3); render(); }, 'leak-ok': () => { ui.leak = null; render(); },
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),
   'del-snap': d => { if (!confirm(`Delete the update from ${fDate(d)}?`)) return; data.snapshots = data.snapshots.filter(s => s.date !== d); ui.stacks[ui.tab].pop(); changed('Update deleted'); },
