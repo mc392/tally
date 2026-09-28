@@ -22,21 +22,34 @@ All reading and writing of the finance file goes through `storage.js`; `app.js` 
 - `node tests/engine.test.js` - projection maths against the spreadsheet's rules, on a made-up household; every figure worked out by hand, month by month (allowance, floor, withdrawal, re-deposit room, April reset).
 - `node tests/mortgage.test.js` - mortgage parts, also worked by hand.
 - `node tests/migration.test.js` - a v1 file migrates and projects **identically** to the frozen pre-v2 engine (`tests/fixtures/engine-v1.js`, never edit it), then dated flows, per-person ISAs, access and pensions.
+- `node tests/lifeevents.test.js` - the roadmap's done-when for 1.5: baby template months, off = identical projection, shifted = created later, scale and contingency, every template builds valid lines.
 - `node tests/storage.test.js` - encryption round trip, wrong passphrase, tampering, IV reuse, conflict rules.
 - `node tests/browser.test.mjs` - the real app in headless Chromium (needs `npm i --no-save playwright`): live save, picking up another device's save, refusing to overwrite it, encryption on, reopening, unlocking on a new device, no CSP violations. Uses a fake file handle, never a real file.
 - `sw.js`'s `CACHE` must be bumped when a shell file is added or renamed.
 
-## Data file shape (version 2, Sep 2026)
+## Data file shape (version 3, Sep 2026)
 `model.js` owns the shape: `TallyModel.migrate()` upgrades any older file on open (`normalise()` calls it first), and the file on disk only changes when it is next saved. `engine.js` only ever sees the current version. **A change to the shape means bumping `VERSION`, adding a step to `migrate()`, and a test in `tests/migration.test.js`.**
 `people[]`, `accounts[] {id,name,owner,type,rate,active,note,access?,noticeDays?,maturity?,flexible?}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
 `flows[] {id,name,kind:'income'|'spend'|'oneoff',amount,start,end,category,owner,inflates,growth,bundle,on,linked?,settles?}`, `bufferPct`,
+`bundles[] {id,name,template,start,on,scale,contingency}` (v3, life events),
 `mortgage {propertyValue, parts[] {id,name,payment,balance,rate,fixEnd,newRate,termEnd}}`,
 `rules {cashFloor,isaPerPerson,isaUsedBy{personId:£},isaFillOrder[],isaUsedTaxYear,sweepToSS}`, `scenarios{key:{name,growth,ssReturn,inflation,payRise}}`, `scenario`, `horizonMonths`.
-- **Flows** replaced v1's `income[]`, `spending[]` and `events[]`. Income and spend amounts are **monthly and positive**; a one-off is the total, **signed** (− = money out) and happens in its `start` month. `start`/`end` are `'YYYY-MM'` or null; `TallyModel.flowActive(f, k)` is the only test of whether a flow counts in a month. `monthlyBudget(data, 'YYYY-MM')` is the regular budget for one month (one-offs excluded). `linked:'mortgage'` on a spend flow is how the mortgage enters spending. `bundle` is reserved for life events (Phase 1.5).
+- **Flows** replaced v1's `income[]`, `spending[]` and `events[]`. Income and spend amounts are **monthly and positive**; a one-off is the total, **signed** (− = money out) and happens in its `start` month. `start`/`end` are `'YYYY-MM'` or null; `TallyModel.flowActive(f, k)` is the only test of whether a flow counts in a month. `monthlyBudget(data, 'YYYY-MM')` is the regular budget for one month (one-offs excluded). `linked:'mortgage'` on a spend flow is how the mortgage enters spending. `bundle` names the life event a flow belongs to.
+- **A newer file is refused.** `loadText()` will not open a file whose `version` is above `TallyModel.VERSION`: an out-of-date copy of the app (the service worker serves the cached one first) would drop what it does not know about and save the loss back.
 - **ISA allowance is per person** (`isaPerPerson`, default £20,000), filled in `isaFillOrder` - the first person's allowance is used up before the next person's (decided with Matt). The Joint person (`id:'J'`) never holds an ISA. Migration splits the old household figure evenly and puts what was already used against people in fill order, which keeps every projected figure identical. Re-deposit room is still tracked for the household, and every cash ISA is treated as flexible in the projection; `accounts[].flexible` is recorded for Phase 1 readiness but not yet used by the engine.
 - **Access** (`instant|notice|fixed|invested|locked`, labels in `TallyModel.ACCESS`): defaulted by type on migration; liabilities have none. Recorded now, used by the Phase 1 readiness ladder.
 - **Pension** is an account type (pool `other`, grows at its own rate like savings, access `locked`).
 Account types: ss_isa, cash_isa, savings, current, pension, card, card_0, tax. Cash pool = current + card. ISA pot = ss_isa + cash_isa.
+
+## Life events (Phase 1.5, Sep 2026)
+A life event is a **bundle**: a row in `bundles[]` plus ordinary flows carrying `bundle: id`, with real dates.
+- **`TallyModel.effectiveFlows(data)` is the one place bundles are applied** - an event that is off drops all its lines, `scale` multiplies every line, `contingency` % is added to its costs (spend, and one-offs that are money out). `project()` and `monthlyBudget()` both read through it; anything new that totals flows must too.
+- **A drop in pay is a NEGATIVE income line** in the event (e.g. parental leave: pay during leave − usual pay). That is what makes switching the event off restore usual pay exactly, without touching the ordinary pay line. `payDip()` in `templates.js` writes it from the person's usual pay in the start month.
+- **Shifting** an event (`shiftBundle`) moves its start and every line's start/end by the same months; changing *Starts* on the event's page does this.
+- `templates.js` (`TallyTemplates`) is pure: each template has `fields(ctx)` in the form-sheet shape, `defaults(ctx)` and `build(params, ctx)` returning lines with **offsets** from the start month; `applyTemplate()` turns them into dated flows. Every amount is a placeholder, and anything that depends on a government rate (Child Benefit and the High Income Child Benefit Charge, childcare funded hours, statutory pay, stamp duty) carries a note to check gov.uk rather than a figure presented as fact. Stamp duty is entered by the user, not calculated - bands change and differ by nation.
+- The property template does **not** change the mortgage parts; it records the payment change as a cost and says so.
+- Life-event lines are kept off the ordinary Plan lists and one-offs page; they live on the event's own page (`bundle:id`). Each month's `rows[].bundleNet[id]` is the event's net effect that month, which reconciles exactly to its effect on net worth (with no buffer); the month detail lists it and the projection charts shade each event's span.
+- Adding from a template is three sheets: pick → answer its questions → **review every line** (each can be changed or left out). Nothing is written until the last Save.
 
 ## Mortgage parts (Sep 2026)
 A mortgage is a list of **parts** (UK sub-accounts: e.g. the original loan plus a further advance), each with its own payment, balance, rate, fix and term; `propertyValue` stays on the mortgage because there is one home.
@@ -46,6 +59,9 @@ A mortgage is a list of **parts** (UK sub-accounts: e.g. the original loan plus 
 - The mortgage is only counted in spending through a spending line with `linked:"mortgage"`, as before.
 - With one part the screen shows its details as it always did; the list appears from the second part on, and the original is named "Part 1" at that point.
 - `node tests/mortgage.test.js` - expectations worked out by hand from the rule.
+
+## Switches
+`.switch span` has `pointer-events:none` so a tap reaches the checkbox beneath it. Before Sep 2026 it did not, and tapping any switch in the app did nothing. Tests click the `input`, never the span.
 
 ## Projection rules (from the original spreadsheet)
 Monthly: cash + surplus + one-off items. Above the cash floor → sweep into ISAs up to (new allowance + flexible re-deposit room). Below → withdraw from ISAs (cash ISAs first); withdrawals add re-deposit room for the rest of that tax year. Allowance resets each April. Growth optional per scenario.

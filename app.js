@@ -39,7 +39,13 @@ const uid = p => `${p}-${Math.random().toString(36).slice(2, 8)}`;
 const TYPE_LABEL = { ss_isa: 'Stocks & shares ISA', cash_isa: 'Cash ISA', savings: 'Savings', current: 'Current account', pension: 'Pension', card: 'Credit card', card_0: '0% credit card', tax: 'Tax owed' };
 const TM = TallyModel;
 const thisMonth = () => todayISO().slice(0, 7);
-const flowsOf = kind => data.flows.filter(f => f.kind === kind);
+const flowsOf = kind => data.flows.filter(f => f.kind === kind && !f.bundle); // life-event lines live on their event's page
+const bundleById = id => data.bundles.find(b => b.id === id);
+const bundleLines = id => data.flows.filter(f => f.bundle === id);
+// shaded bands for the projection charts: each event that is on, from its first month to its last
+function bundleBands(t0, t1) {
+  return data.bundles.filter(b => b.on).map(b => { const sp = TM.bundleSpan(data, b.id); return sp && sp.from ? { name: b.name, from: Date.parse(sp.from + '-01'), to: sp.to ? monthEndT(sp.to + '-01') : t1 } : null; }).filter(Boolean);
+}
 const flowById = id => data.flows.find(f => f.id === id);
 // "from Sep 2027", "until Mar 2028", "Sep 2027 – Mar 2028" - blank when it runs all the time
 function flowWhen(f) {
@@ -263,6 +269,8 @@ async function loadText(text, name, { quiet = false } = {}) {
     d.writer = env.writer;
   }
   if (!d || !Array.isArray(d.accounts) || !Array.isArray(d.snapshots)) { if (!quiet) toast('That isn’t a Tally file', true); return false; }
+  // A file saved by a newer Tally has things this version would silently drop - and then save that loss back.
+  if (+d.version > TM.VERSION) { if (!quiet) toast('This file was saved by a newer version of Tally. Close and reopen the app to update it, then try again.', true); return false; }
   if (!quiet && data && meta.dirty && !confirm('You have unsaved changes. Replace them with this file?')) return false;
   const writer = d.writer || null; delete d.writer;
   data = normalise(d); meta.fileName = name || meta.fileName; meta.dirty = false; meta.conflict = false;
@@ -333,7 +341,7 @@ const sw = (checked, act, arg) => `<span class="switch"><input type="checkbox" $
 
 // ---------- charts (SVG + HTML overlay, scrubbable) ----------
 const charts = {};
-function chart(id, { series, height = 170, fmt = short, floor = null, markers = [] }) {
+function chart(id, { series, height = 170, fmt = short, floor = null, markers = [], bands = [] }) {
   const all = series.flatMap(s => s.pts);
   if (all.length < 2) return `<div class="note">Add at least two balance updates to see a trend.</div>`;
   const t0 = Math.min(...all.map(p => p.t)), t1 = Math.max(...all.map(p => p.t));
@@ -345,6 +353,8 @@ function chart(id, { series, height = 170, fmt = short, floor = null, markers = 
   const path = pts => pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join('');
   const ticks = niceTicks(lo, hi, 3);
   let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${H}px" aria-hidden="true">`;
+  // life events: a shaded band across the months each one covers
+  for (const b of bands) { const a = Math.max(0, X(b.from)), z = Math.min(W, X(b.to)); if (z > a) svg += `<rect x="${a}" y="0" width="${z - a}" height="${H}" fill="var(--accent)" opacity=".07"><title>${esc(b.name)}</title></rect>`; }
   for (const v of ticks) svg += `<line x1="0" x2="${W}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--sep)" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
   if (floor != null) svg += `<line x1="0" x2="${W}" y1="${Y(floor)}" y2="${Y(floor)}" stroke="var(--orange)" stroke-width="1" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>`;
   for (const s of series) {
@@ -422,7 +432,7 @@ function vHome() {
   });
 
   const lowest = pr.rows.reduce((b, r) => r.closing < b.closing ? r : b, pr.rows[0]);
-  const nextEv = flowsOf('oneoff').filter(e => e.on && e.start && e.start >= thisMonth()).sort((a, b) => a.start.localeCompare(b.start))[0];
+  const nextEv = TM.effectiveFlows(data).filter(e => e.kind === 'oneoff' && e.on && e.start && e.start >= thisMonth()).sort((a, b) => a.start.localeCompare(b.start))[0];
   const bud = monthlyBudget(data, thisMonth());
   const sc = data.scenarios[scenarioKey()];
 
@@ -568,8 +578,9 @@ function vProjection() {
   const tFirst = Date.parse(pr.snapDate);
   const pts = f => [{ t: tFirst, v: f === 'net' ? first.net : f === 'isa' ? first.isa : first.cash }, ...R.map(r => ({ t: monthEndT(r.date), v: f === 'net' ? r.net : f === 'isa' ? r.isa : r.closing }))];
   const markers = R.flatMap(r => r.events.map(e => ({ t: monthEndT(r.date), v: e.amount })));
-  const c1 = chart('c-proj', { series: [{ name: 'Net worth', color: 'var(--c-net)', pts: pts('net') }, { name: 'ISAs', color: 'var(--c-isa)', pts: pts('isa'), fill: true }].map((x, i) => i ? x : { ...x, whenLabel: `End of ${fMonth(end.date)}` }), height: 180, markers });
-  const c2 = chart('c-cash', { series: [{ name: 'Cash', color: 'var(--c-cash)', pts: pts('cash'), fill: true, whenLabel: `End of ${fMonth(end.date)}` }], height: 120, floor: +data.rules.cashFloor, markers });
+  const bands = bundleBands(tFirst, monthEndT(end.date));
+  const c1 = chart('c-proj', { series: [{ name: 'Net worth', color: 'var(--c-net)', pts: pts('net') }, { name: 'ISAs', color: 'var(--c-isa)', pts: pts('isa'), fill: true }].map((x, i) => i ? x : { ...x, whenLabel: `End of ${fMonth(end.date)}` }), height: 180, markers, bands });
+  const c2 = chart('c-cash', { series: [{ name: 'Cash', color: 'var(--c-cash)', pts: pts('cash'), fill: true, whenLabel: `End of ${fMonth(end.date)}` }], height: 120, floor: +data.rules.cashFloor, markers, bands });
   const tops = R.reduce((s, r) => s + r.topUp, 0), wds = R.reduce((s, r) => s + r.withdraw, 0), growth = R.reduce((s, r) => s + r.growth, 0);
   const lowest = R.reduce((b, r) => r.closing < b.closing ? r : b, R[0]);
   const short_ = R.filter(r => r.shortfall > 0.5);
@@ -587,7 +598,7 @@ function vProjection() {
     body: `${seg(Object.entries(data.scenarios).map(([k, v]) => [k, esc(v.name)]), sk, 'scenario')}
       <div class="chips">${[[18, '18 months'], [36, '3 years'], [60, '5 years'], [120, '10 years']].map(([n, l]) => `<button class="${n === horizon() ? 'on' : ''}" data-act="horizon" data-arg="${n}">${l}</button>`).join('')}</div>
       <section class="card"><div class="gh">Net worth and ISAs<b>from ${fDate(pr.snapDate)}</b></div>${c1}
-        <div class="legend"><span><i style="background:var(--c-net)"></i>Net worth</span><span><i style="background:var(--c-isa)"></i>ISAs</span><span><i style="background:var(--red)"></i>Payment</span><span><i style="background:var(--green)"></i>Receipt</span></div></section>
+        <div class="legend"><span><i style="background:var(--c-net)"></i>Net worth</span><span><i style="background:var(--c-isa)"></i>ISAs</span><span><i style="background:var(--red)"></i>Payment</span><span><i style="background:var(--green)"></i>Receipt</span>${bands.length ? '<span><i style="background:var(--accent);opacity:.3"></i>Life events</span>' : ''}</div></section>
       <section class="card"><div class="gh">Cash held<b>floor ${amt(+data.rules.cashFloor)}</b></div>${c2}</section>
       <div class="stats">
         <div><div class="k">Net worth</div><div class="v amt">${short(end.net)}</div><div class="n">${fMonth(end.date)} · ${chg(end.net - first.net)}</div></div>
@@ -628,6 +639,7 @@ function vMonth(k) {
       ${group(
         line('Stocks & shares ISAs', r.isaSS) + line('Cash ISAs', r.isaCash) + (r.growth ? line('Growth this month', r.growth, { sign: true }) : '') + line('Other savings and debts', r.other) + line('Net worth', r.net, { total: true }),
         'Balances at month end')}
+      ${Object.keys(r.bundleNet).length ? group(Object.entries(r.bundleNet).map(([id, v]) => { const b = bundleById(id); return b ? row({ title: esc(b.name), sub: 'Life event, this month', value: amt(v, { sign: true, color: true }), act: 'push', arg: 'bundle:' + id }) : ''; }).join(''), 'Life events', 'Already included in the figures above.') : ''}
       ${m ? group((r.mortgageParts.length > 1 ? r.mortgageParts.map((p, i) => line(esc(p.name || `Part ${i + 1}`), -p.pay, { sub: p.bal != null ? `${short(p.bal)} left` : 'Flat payment' })).join('') : '') +
         line('Mortgage payment', -r.mortgagePay) + line('Of which interest', -r.mortgageInterest) + line('Mortgage balance', -r.mortgageBal, { total: true }), 'Mortgage') : ''}</div>`,
   };
@@ -666,6 +678,7 @@ function vPlan() {
       ${group(inc + row({ title: 'Add income', act: 'add-income', cls: 'act-row', chev: false }), 'Income (monthly, after tax)')}
       ${group(Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => row({ title: esc(c), value: amt(v), vsub: `${short(v * 12)} a year`, act: 'push', arg: 'spending:' + c })).join('') +
         row({ title: 'Buffer for the unexpected', value: `${data.bufferPct}%`, act: 'edit-buffer' }) + row({ title: 'Add spending', act: 'add-spend', cls: 'act-row', chev: false }), 'Spending (monthly)')}
+      ${group(data.bundles.map(bundleRow).join('') + row({ title: 'Add a life event', act: 'add-bundle', cls: 'act-row', chev: false }), 'Life events', data.bundles.length ? 'Each event is a set of dated lines you can switch on or off, move or scale as one.' : 'A baby, a move, a renovation, a car, a big trip or time off work, as a set of dated costs and income changes you can switch on and off.')}
       ${group(
         row({ title: 'Mortgage', sub: mt.parts.length > 1 ? `${mt.parts.length} parts` : '', value: amt(mt.payment), vsub: mt.balance != null ? `${short(mt.balance)} owed` : 'balance not set', act: 'push', arg: 'mortgage' }) +
         row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Commitments')}
@@ -714,6 +727,93 @@ function vEvents() {
       `One-off items<b>net ${money(net, { sign: true })}</b>`, 'Switch items off to see the projection without them. They stay here for later.')}
       ${group(row({ title: 'Add a payment or receipt', act: 'add-event', cls: 'act-row', chev: false }))}`,
   };
+}
+
+// ---------- life events ----------
+// How much an event adds (+) or takes away (−) over the projection horizon, in the default scenario.
+function bundleImpact(id) {
+  const pr = project(data, scenarioKey(), horizon());
+  return pr ? pr.rows.reduce((s, r) => s + (r.bundleNet[id] || 0), 0) : 0;
+}
+function bundleWhen(b) { const sp = TM.bundleSpan(data, b.id); if (!sp || !sp.from) return 'No lines yet'; return sp.to ? `${fMonth(sp.from, true)} – ${fMonth(sp.to, true)}` : `from ${fMonth(sp.from)}`; }
+function bundleRow(b) {
+  return row({ title: esc(b.name), sub: bundleWhen(b), value: b.on ? amt(bundleImpact(b.id), { sign: true, color: true }) : '<span class="pill">Off</span>', act: 'push', arg: 'bundle:' + b.id, right: sw(b.on, 'b-on', b.id), chev: false });
+}
+function vBundle(id) {
+  const b = bundleById(id); if (!b) { ui.stacks[ui.tab].pop(); return currentView(); }
+  const lines = bundleLines(id), H = horizon();
+  const impact = bundleImpact(id);
+  const kinds = [['income', 'Income changes', 'edit-income'], ['spend', 'Monthly costs', 'edit-spend'], ['oneoff', 'One-off items', 'edit-event']];
+  const lineRow = (f, act) => row({ title: esc(f.name), sub: [flowWhen(f), f.note ? esc(f.note) : ''].filter(Boolean).join(' · '), value: amt(f.kind === 'spend' ? -f.amount : f.amount, { sign: true, color: true }), vsub: f.kind === 'oneoff' ? '' : 'a month', act, arg: f.id });
+  return {
+    title: b.name, large: true, back: 'Plan', right: `<button class="pill" data-act="edit-bundle" data-arg="${esc(id)}" style="color:var(--accent)">Edit</button>`,
+    body: `<div class="hero"><div class="cap">${b.on ? `Effect over ${H >= 24 ? H / 12 + ' years' : H + ' months'}` : 'Switched off'}</div><div class="big amt ${impact < 0 ? 'neg' : ''}">${money(b.on ? impact : 0, { sign: true }).replace('£', '<span class="p">£</span>')}</div><div class="eq">${esc(bundleWhen(b))}</div></div>
+      ${group(
+        row({ title: 'Included in the projection', right: sw(b.on, 'b-on', id), chev: false }) +
+        row({ title: 'Starts', value: b.start ? fMonth(b.start) : 'Not set', vsub: 'moving it moves every line', act: 'edit-bundle', arg: id }) +
+        row({ title: 'Scale', value: `${Math.round((+b.scale || 0) * 100)}%`, vsub: 'every amount', act: 'edit-bundle', arg: id }) +
+        row({ title: 'Contingency', value: `${+b.contingency || 0}%`, vsub: 'added to costs', act: 'edit-bundle', arg: id }), 'Settings')}
+      ${kinds.map(([k, h, act]) => { const l = lines.filter(f => f.kind === k); return l.length ? group(l.map(f => lineRow(f, act)).join(''), h, k === 'income' ? 'A minus figure is a drop from usual pay during the period.' : '') : ''; }).join('')}
+      ${group(row({ title: 'Add an income change', act: 'add-income', arg: 'b:' + id, cls: 'act-row', chev: false }) + row({ title: 'Add a monthly cost', act: 'add-spend', arg: 'b:' + id, cls: 'act-row', chev: false }) + row({ title: 'Add a one-off item', act: 'add-event', arg: 'b:' + id, cls: 'act-row', chev: false }))}
+      <p class="note">Every amount came from a template as a placeholder: check each one against your own situation. None of it is advice.</p>`,
+  };
+}
+function bundleSheet(id) {
+  const b = bundleById(id);
+  formSheet({
+    title: b.name, values: { name: b.name, start: b.start, scale: Math.round((+b.scale || 0) * 100), contingency: +b.contingency || 0 },
+    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'start', label: 'Starts', type: 'month', hint: 'Every line moves with it' }] },
+    { foot: 'Scale changes every amount in the event, e.g. 120% if costs turn out a fifth higher. Contingency is added to its costs only.', fields: [{ key: 'scale', label: 'Scale', type: 'percent', unit: '%' }, { key: 'contingency', label: 'Contingency', type: 'percent', unit: '%' }] }],
+    extra: destructive('Delete this event', 'delete'),
+    onSave: (v, act) => {
+      if (act === 'delete') {
+        if (!confirm(`Delete ${b.name} and all ${bundleLines(id).length} of its lines?`)) return;
+        data.flows = data.flows.filter(f => f.bundle !== id); data.bundles = data.bundles.filter(x => x.id !== id);
+        if (ui.stacks[ui.tab].at(-1) === 'bundle:' + id) ui.stacks[ui.tab].pop();
+        return changed('Event deleted');
+      }
+      if (v.start && b.start && v.start !== b.start) TM.shiftBundle(data, id, TM.monthKey(v.start) - TM.monthKey(b.start));
+      else if (v.start && !b.start) b.start = v.start;
+      b.name = v.name || b.name; b.scale = Math.max(0, (+v.scale || 0) / 100); b.contingency = +v.contingency || 0;
+      changed('Event saved');
+    },
+  });
+}
+// Add from a template: pick one → answer its questions → review every line → save.
+function templatePicker() {
+  sheet({ title: 'Add a life event', done: null, body: `<section class="group"><div class="list">${TallyTemplates.list().map(t => `<button class="row act-row" data-sact="${t.key}"><div class="main"><div class="ttl">${esc(t.name)}</div><div class="sub">${esc(t.blurb)}</div></div>${CHEV}</button>`).join('')}</div></section>
+    <p class="note">Every amount is a placeholder for you to change, and you review each line before anything is saved.</p>`,
+    onDone: (form, close, key) => { close(); setTimeout(() => templateAsk(key), 360); } });
+}
+function templateAsk(key) {
+  const t = TallyTemplates.T[key], start = TM.shiftMonth(thisMonth(), 6), ctx = TallyTemplates.makeContext(data, start);
+  const secs = t.fields(ctx);
+  formSheet({
+    title: t.name, values: { name: t.name, start, ...t.defaults(ctx) },
+    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'start', label: t.startLabel, type: 'month' }] }, ...secs],
+    onSave: v => {
+      if (!v.start) { toast('Choose a month', true); return false; }
+      const built = TallyTemplates.applyTemplate(key, v, v.start, data, uid);
+      built.bundle.name = v.name || t.name;
+      setTimeout(() => templateReview(built), 360);
+    },
+  });
+}
+function templateReview({ bundle, flows }) {
+  if (!flows.length) { data.bundles.push(bundle); changed('Event added'); return actions.push('bundle:' + bundle.id); }
+  const vals = {}; flows.forEach((f, i) => { vals['a' + i] = f.kind === 'spend' ? f.amount : f.amount; vals['on' + i] = true; });
+  const kindWord = { income: 'income change a month', spend: 'cost a month', oneoff: 'one-off' };
+  formSheet({
+    title: 'Check each line', values: vals,
+    sections: [{ head: bundle.name, foot: 'Change any amount, or switch a line off to leave it out. Income changes can be negative: a drop from usual pay. Nothing is saved until you tap Save.', fields: flows.flatMap((f, i) => [
+      { key: 'on' + i, label: f.name, type: 'toggle', hint: `${flowWhen(f)} · ${kindWord[f.kind]}${f.note ? ' · ' + f.note : ''}` },
+      { key: 'a' + i, label: f.kind === 'spend' ? 'Cost a month' : f.kind === 'income' ? 'Change a month' : 'Amount (minus = out)', type: 'money' }]) }],
+    onSave: v => {
+      const keep = flows.filter((f, i) => { f.amount = v['a' + i]; return v['on' + i]; });
+      data.bundles.push(bundle); data.flows.push(...keep);
+      changed(`${bundle.name} added`); actions.push('bundle:' + bundle.id);
+    },
+  });
 }
 
 // The mortgage can have parts (sub-accounts), each with its own rate, fix and term.
@@ -909,8 +1009,9 @@ function accountSheet(id) {
 // Income, spending and one-offs are all "flows". Income and spending are monthly and can start and stop on a month.
 const whenFields = [{ key: 'start', label: 'From', type: 'month', optional: true, hint: 'Leave blank if it’s already running' }, { key: 'end', label: 'Until', type: 'month', optional: true, hint: 'Leave blank if it carries on' }];
 function checkWhen(v) { if (v.start && v.end && v.end < v.start) { toast('“Until” is before “From”', true); return false; } return true; }
-function incomeSheet(id) {
-  const x = id ? flowById(id) : { name: '', owner: data.people[0].id, amount: 0, growth: 0, start: null, end: null };
+const bundleArg = arg => (arg && String(arg).startsWith('b:') ? bundleById(String(arg).slice(2)) : null);
+function incomeSheet(id, inBundle) {
+  const x = id ? flowById(id) : { name: '', owner: data.people[0].id, amount: 0, growth: 0, start: inBundle ? inBundle.start : null, end: null };
   formSheet({
     title: id ? 'Edit income' : 'New income', values: x,
     sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'owner', label: 'Whose', type: 'select', options: ownerOpts() }, { key: 'amount', label: 'Monthly, after tax', type: 'money', unit: '' }, { key: 'growth', label: 'Extra rise each April', type: 'percent', unit: '%', hint: 'On top of the scenario pay rise' }] },
@@ -919,13 +1020,13 @@ function incomeSheet(id) {
     onSave: (v, act) => {
       if (act === 'delete') { data.flows = data.flows.filter(f => f.id !== id); return changed('Income removed'); }
       if (!checkWhen(v)) return false;
-      if (id) Object.assign(x, v); else data.flows.push({ id: uid('inc'), kind: 'income', category: 'Income', inflates: false, bundle: null, on: true, ...v }); changed('Income saved');
+      if (id) Object.assign(x, v); else data.flows.push({ id: uid('inc'), kind: 'income', category: 'Income', inflates: false, bundle: inBundle ? inBundle.id : null, on: true, ...v }); changed('Income saved');
     },
   });
 }
-function spendSheet(id, cat) {
-  const x = id ? flowById(id) : { name: '', category: cat || 'Living', amount: 0, inflates: true, start: null, end: null };
-  const cats = [...new Set([...flowsOf('spend').map(s => s.category || 'Other'), 'Home', 'Bills', 'Living', 'Transport', 'Other'])];
+function spendSheet(id, cat, inBundle) {
+  const x = id ? flowById(id) : { name: '', category: cat || (inBundle ? inBundle.name : 'Living'), amount: 0, inflates: true, start: inBundle ? inBundle.start : null, end: null };
+  const cats = [...new Set([...flowsOf('spend').map(s => s.category || 'Other'), ...(x.category ? [x.category] : []), 'Home', 'Bills', 'Living', 'Transport', 'Other'])];
   const monthly = Math.round((+x.amount || 0) * 100) / 100, annual = Math.round((+x.amount || 0) * 12 * 100) / 100;
   formSheet({
     title: id ? 'Edit spending' : 'New spending', values: { ...x, monthly, annual },
@@ -940,12 +1041,12 @@ function spendSheet(id, cat) {
       // keep the exact stored figure unless one of the two boxes was actually changed
       const amount = Math.abs(v.annual - annual) > .005 ? v.annual / 12 : Math.abs(v.monthly - monthly) > .005 ? v.monthly : (+x.amount || 0);
       const rec = { name: v.name, category: v.category, amount, inflates: v.inflates, start: v.start, end: v.end };
-      if (id) Object.assign(x, rec); else data.flows.push({ id: uid('sp'), kind: 'spend', owner: null, growth: 0, bundle: null, on: true, ...rec }); changed('Spending saved');
+      if (id) Object.assign(x, rec); else data.flows.push({ id: uid('sp'), kind: 'spend', owner: null, growth: 0, bundle: inBundle ? inBundle.id : null, on: true, ...rec }); changed('Spending saved');
     },
   });
 }
-function eventSheet(id) {
-  const x = id ? flowById(id) : { name: '', amount: -1000, start: thisMonth(), on: true, settles: '' };
+function eventSheet(id, inBundle) {
+  const x = id ? flowById(id) : { name: '', amount: -1000, start: inBundle ? inBundle.start : thisMonth(), on: true, settles: '' };
   const debtOpts = [['', 'Nothing'], ...data.accounts.filter(a => LIAB.has(a.type)).map(a => [a.id, a.name])];
   formSheet({
     title: id ? 'Edit item' : 'New item', values: { ...x, dir: x.amount < 0 ? 'out' : 'in', abs: Math.abs(x.amount), settles: x.settles || '' },
@@ -958,7 +1059,7 @@ function eventSheet(id) {
       const amount = (v.dir === 'out' ? -1 : 1) * Math.abs(v.abs);
       const rec = { name: v.name || 'Untitled', amount, start: v.start, end: v.start, on: v.on, category: amount < 0 ? 'One-off' : 'Receipt' };
       if (v.settles) rec.settles = v.settles; else if (x.settles) delete x.settles;
-      if (id) Object.assign(x, rec); else data.flows.push({ id: uid('ev'), kind: 'oneoff', owner: null, inflates: false, growth: 0, bundle: null, ...rec }); changed('Item saved');
+      if (id) Object.assign(x, rec); else data.flows.push({ id: uid('ev'), kind: 'oneoff', owner: null, inflates: false, growth: 0, bundle: inBundle ? inBundle.id : null, ...rec }); changed('Item saved');
     },
   });
 }
@@ -1029,7 +1130,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -1070,15 +1171,17 @@ const actions = {
   scenario: k => { ui.scenario = k; render(); },
   horizon: n => { ui.horizon = +n; render(); },
   'add-account': () => accountSheet(null), 'edit-account': accountSheet,
-  'add-income': () => incomeSheet(null), 'edit-income': incomeSheet,
-  'add-spend': c => spendSheet(null, c), 'edit-spend': id => spendSheet(id),
-  'add-event': () => eventSheet(null), 'edit-event': eventSheet,
+  'add-income': a => incomeSheet(null, bundleArg(a)), 'edit-income': id => incomeSheet(id),
+  'add-spend': c => bundleArg(c) ? spendSheet(null, null, bundleArg(c)) : spendSheet(null, c), 'edit-spend': id => spendSheet(id),
+  'add-event': a => eventSheet(null, bundleArg(a)), 'edit-event': id => eventSheet(id),
+  'add-bundle': templatePicker, 'edit-bundle': bundleSheet,
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),
   'del-snap': d => { if (!confirm(`Delete the update from ${fDate(d)}?`)) return; data.snapshots = data.snapshots.filter(s => s.date !== d); ui.stacks[ui.tab].pop(); changed('Update deleted'); },
 };
 const changes = {
   'ev-on': (id, on) => { flowById(id).on = on; changed(); },
+  'b-on': (id, on) => { bundleById(id).on = on; changed(on ? 'Event included' : 'Event left out'); },
   'sc-growth': (k, on) => { data.scenarios[k].growth = on; changed(); },
   'sc-default': (k, on) => { if (on) { data.scenario = k; ui.scenario = k; changed(); } else render(); },
 };

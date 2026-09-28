@@ -162,6 +162,8 @@ Put two to four options side by side at the decision point.
 - Fees added to the loan accrue interest.
 
 ### 1.5 Life events library
+
+> **Status: done (28 Sep 2026).** Built first, as agreed. All seven templates; review before save; toggle, shift, scale, contingency; shaded bands; month-detail section. Stamp duty is entered, not calculated from bands (bands differ by nation and change) - revisit if wanted. Dragging a start date is an edit of the month, not a drag.
 Pre-built, editable templates that add a bundle of dated flows in one go. Each bundle can be switched on and off, shifted in time, and scaled.
 
 **What Matt sees**

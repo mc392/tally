@@ -14,8 +14,16 @@
 //   rules.isaPerPerson, rules.isaUsedBy {personId: £}, rules.isaFillOrder [personIds]
 //              - replaces the household isaAllowance / isaUsed. Top-ups fill the first person's
 //              allowance, then the next. The Joint person never holds an ISA.
+//
+// Version 3 (Sep 2026):
+//   bundles[] - life events: {id, name, template, start:'YYYY-MM', on, scale, contingency, note?}.
+//              Their lines are ordinary flows carrying `bundle: id`, with real dates. A bundle that is
+//              off removes all its lines; `scale` multiplies every line; `contingency` (%) is added to
+//              its costs. effectiveFlows() is the one place those three are applied.
+//              An income line in a bundle may be NEGATIVE: that is how a drop in pay (parental leave, a
+//              sabbatical) is written, so switching the event off gives the usual pay back untouched.
 const TallyModel = (() => {
-  const VERSION = 2;
+  const VERSION = 3;
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
   const ACCESS = { instant: 'Instant access', notice: 'Notice account', fixed: 'Fixed term', invested: 'Invested', locked: 'Locked away' };
@@ -84,6 +92,8 @@ const TallyModel = (() => {
     if (!src || typeof src !== 'object') return src;
     const d = (+src.version || 1) < 2 ? fromV1(src) : clone(src);
     d.flows ||= [];
+    d.bundles ||= [];
+    for (const b of d.bundles) { b.on ??= true; b.scale ??= 1; b.contingency ??= 0; }
     for (const f of d.flows) { f.start ??= null; f.end ??= null; f.bundle ??= null; f.on ??= true; f.inflates ??= false; f.growth ??= 0; }
     (d.accounts || []).forEach(defaultAccess);
     const r = d.rules ||= {};
@@ -107,7 +117,40 @@ const TallyModel = (() => {
     return true;
   }
 
-  return { VERSION, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
+  // The flows the projection should use: life events that are off are dropped, and each event's
+  // scale and contingency applied. Flows not in an event (or in one that no longer exists) pass through.
+  function effectiveFlows(d) {
+    const by = Object.fromEntries((d.bundles || []).map(b => [b.id, b]));
+    const out = [];
+    for (const f of d.flows || []) {
+      const b = f.bundle && by[f.bundle];
+      if (!b) { out.push(f); continue; }
+      if (b.on === false) continue;
+      const cost = f.kind === 'spend' || (f.kind === 'oneoff' && f.amount < 0);
+      const k = (+b.scale || 0) * (cost ? 1 + (+b.contingency || 0) / 100 : 1);
+      out.push(k === 1 ? f : { ...f, amount: (+f.amount || 0) * k });
+    }
+    return out;
+  }
+  // Move a month string by n months: shiftMonth('2026-11', 3) → '2027-02'
+  const shiftMonth = (m, n) => { if (!m) return m; const k = monthKey(m) + n; return `${Math.floor(k / 12)}-${String(k % 12 + 1).padStart(2, '0')}`; };
+  // Move a whole life event: its start and every line's dates, by the same number of months.
+  function shiftBundle(d, id, n) {
+    const b = (d.bundles || []).find(x => x.id === id); if (!b || !n) return;
+    b.start = shiftMonth(b.start, n);
+    for (const f of d.flows) if (f.bundle === id) { f.start = shiftMonth(f.start, n); f.end = shiftMonth(f.end, n); }
+  }
+  // First and last month an event touches (last is null if something in it never ends)
+  function bundleSpan(d, id) {
+    const fl = d.flows.filter(f => f.bundle === id);
+    if (!fl.length) return null;
+    const starts = fl.map(f => f.start).filter(Boolean).sort();
+    const open = fl.some(f => !f.end);
+    const ends = fl.map(f => f.end).filter(Boolean).sort();
+    return { from: starts[0] || null, to: open ? null : ends.at(-1) };
+  }
+
+  return { VERSION, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyModel;

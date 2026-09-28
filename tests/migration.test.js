@@ -62,7 +62,8 @@ console.log(`  ✓ a v1 file projects identically after migrating (${figures} fi
 // ---------- 2. the migration itself ----------
 const orig = v1(), before = JSON.stringify(orig), m = TM.migrate(orig);
 assert.strictEqual(JSON.stringify(orig), before, 'the original is never changed');
-assert.strictEqual(m.version, 2);
+assert.strictEqual(m.version, TM.VERSION);
+assert.deepStrictEqual(m.bundles, [], 'no life events in a v1 file');
 assert.ok(!('income' in m) && !('spending' in m) && !('events' in m), 'old lists removed');
 assert.strictEqual(m.flows.filter(f => f.kind === 'income').length, 2);
 assert.strictEqual(m.flows.find(f => f.id === 's2').amount, 1234.56 / 12, 'yearly spending becomes monthly');

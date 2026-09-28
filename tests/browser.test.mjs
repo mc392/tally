@@ -161,7 +161,7 @@ try {
   ok((await page.textContent('#main')).includes('Home equity') && !(await page.textContent('#main')).includes('2 parts'), 'deleting a part goes back to the single mortgage');
 
   console.log('Data file version 2');
-  ok(await page.evaluate(() => data.version === 2 && !data.income && data.flows.length === 3), 'the v1 file was upgraded: income, spending and one-offs are now flows');
+  ok(await page.evaluate(() => data.version === TallyModel.VERSION && !data.income && data.flows.length === 3), 'the v1 file was upgraded: income, spending and one-offs are now flows');
   ok(await page.evaluate(() => data.accounts.find(a => a.id === 'isa').access === 'invested' && data.accounts.find(a => a.id === 'cur').access === 'instant'), 'accounts were given an access type');
   await page.click('#tabbar [data-arg="plan"]');
   await page.click('[data-act="add-spend"]');
@@ -193,7 +193,50 @@ try {
   await page.waitForFunction(() => data.accounts.find(a => a.id === 'cur').access === 'notice');
   ok(await page.evaluate(() => { const a = data.accounts.find(x => x.id === 'cur'); return a.noticeDays === 35 && !('maturity' in a) && !('flexible' in a); }), 'account access saved, with only the details that apply to it');
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
-  ok(await page.evaluate(async () => { const f = JSON.parse(window.__disk); const d = await TS.unseal(f, seal); return d.version === 2 && Array.isArray(d.flows) && !('income' in d) && !('events' in d); }), 'the saved file is version 2');
+  ok(await page.evaluate(async () => { const f = JSON.parse(window.__disk); const d = await TS.unseal(f, seal); return d.version === TallyModel.VERSION && Array.isArray(d.flows) && !('income' in d) && !('events' in d); }), 'the saved file is the current version');
+
+  console.log('Life events');
+  const plainNet = await page.evaluate(() => project(data, 'cautious', 60).rows.map(r => r.net));
+  await page.click('#tabbar [data-arg="plan"]');
+  await page.click('#main [data-act="add-bundle"]');
+  await page.waitForSelector('.sheet-wrap.open [data-sact="baby"]');
+  await page.click('.sheet-wrap.open [data-sact="baby"]');
+  await page.waitForSelector('.sheet-wrap.open #f_leave1Months');
+  await page.fill('.sheet-wrap.open #f_start', '2027-05');
+  await page.fill('.sheet-wrap.open #f_leave1Months', '6');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForSelector('.sheet-wrap.open #f_on0');
+  const reviewText = await page.textContent('.sheet-wrap.open');
+  ok(reviewText.includes('Check each line') && reviewText.includes('Childcare') && reviewText.includes('Child Benefit'), 'every line is shown for review before saving');
+  ok(await page.evaluate(() => data.bundles.length === 0), 'nothing saved until the review is confirmed');
+  await page.click('.sheet-wrap.open #f_on1'); // leave out the second line (the nursery room) - a real tap on the switch
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.bundles.length === 1);
+  const ev = await page.evaluate(() => ({ b: data.bundles[0], lines: data.flows.filter(f => f.bundle === data.bundles[0].id) }));
+  ok(ev.lines.length > 5 && !ev.lines.some(f => f.name === 'Nursery room'), 'the event is saved with the lines kept, minus the one left out');
+  ok(ev.lines.find(f => f.name === 'Parental leave – Me').end === '2027-10', '6 months of leave from May 2027 ends in Oct 2027');
+  ok((await page.textContent('#main')).includes('Parental leave – Me'), 'the event’s page lists its lines');
+  const withNet = await page.evaluate(() => project(data, 'cautious', 60).rows.map(r => r.net));
+  ok(withNet.at(-1) !== plainNet.at(-1), 'the event changes the projection');
+  await page.click('#main [data-chg="b-on"]');
+  await page.waitForFunction(() => !data.bundles[0].on);
+  const offNet = await page.evaluate(() => project(data, 'cautious', 60).rows.map(r => r.net));
+  ok(offNet.every((v, i) => Math.abs(v - plainNet[i]) < 1e-6), 'switched off: the projection is exactly as it was without it');
+  await page.click('#main [data-chg="b-on"]');
+  await page.waitForFunction(() => data.bundles[0].on);
+  await page.click('#navR [data-act="edit-bundle"]');
+  await page.waitForSelector('.sheet-wrap.open #f_start');
+  await page.fill('.sheet-wrap.open #f_start', '2027-11');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.bundles[0].start === '2027-11');
+  ok(await page.evaluate(() => data.flows.find(f => f.bundle && f.name === 'Parental leave – Me').start === '2027-11' && data.flows.find(f => f.bundle && f.name === 'Pram, cot and kit').start === '2027-09'), 'moving the start moves every line with it');
+  await page.click('#tabbar [data-arg="projection"]');
+  ok(!!(await page.$('#c-proj rect')), 'the projection chart shows the event as a shaded band');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
+  console.log('Newer files');
+  const refused = await page.evaluate(async () => { const f = JSON.stringify({ app: 'tally', version: TallyModel.VERSION + 1, accounts: [], snapshots: [] }); return await loadText(f, 'future.json'); });
+  ok(refused === false && await page.evaluate(() => data.bundles.length === 1), 'a file from a newer Tally is refused, and nothing is replaced');
 
   ok((await page.evaluate(() => window.__csp)).length === 0 && (await page2.evaluate(() => window.__csp)).length === 0, 'nothing blocked by the security policy');
   ok(errors.length === 0, 'no script errors' + (errors.length ? ': ' + errors.join('; ') : ''));

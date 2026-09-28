@@ -67,7 +67,7 @@ function snapshotTotals(data, snap) {
 // One-offs are left out - they are not part of what a normal month looks like.
 function monthlyBudget(data, when) {
   const k = EM.monthKey(when || new Date().toISOString().slice(0, 7));
-  const live = data.flows.filter(f => f.kind !== 'oneoff' && EM.flowActive(f, k));
+  const live = EM.effectiveFlows(data).filter(f => f.kind !== 'oneoff' && EM.flowActive(f, k));
   const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + (+f.amount || 0), 0);
   const mPay = mortgageTotals(data).payment;
   const spend = live.filter(f => f.kind === 'spend').reduce((s, f) => s + (f.linked === 'mortgage' ? mPay : +f.amount || 0), 0);
@@ -110,6 +110,7 @@ function project(data, scenarioKey, months) {
   // ISA allowance is per person. Top-ups fill people in r.isaFillOrder: the first person's allowance
   // is used up before the next person's. Re-deposit room (money taken out of a flexible ISA, which can
   // go back in the same tax year without new allowance) is tracked for the household.
+  const flows = EM.effectiveFlows(data); // life events applied: off ones dropped, scale and contingency in
   let ty = taxYearOf(k0);
   const who = r.isaFillOrder && r.isaFillOrder.length ? r.isaFillOrder : ['M'];
   const per = +r.isaPerPerson || 0;
@@ -146,7 +147,7 @@ function project(data, scenarioKey, months) {
     const mPay = mParts.reduce((s, p) => s + p.pay, 0), mortgageInterest = mParts.reduce((s, p) => s + p.interest, 0);
     const mBal = anyBal ? mParts.reduce((s, p) => s + (p.bal || 0), 0) : null;
 
-    const live = data.flows.filter(f => EM.flowActive(f, k));
+    const live = flows.filter(f => EM.flowActive(f, k));
     const income = live.filter(f => f.kind === 'income').reduce((s, f) => s + (+f.amount || 0) * payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn), 0);
     let spend = 0;
     for (const f of live) {
@@ -158,6 +159,13 @@ function project(data, scenarioKey, months) {
     const surplus = income - spend - buffer;
 
     const evs = live.filter(f => f.kind === 'oneoff');
+    // what each life event adds or takes away this month (income − costs, one-offs included)
+    const bundleNet = {};
+    for (const f of live) if (f.bundle) {
+      const v = f.kind === 'income' ? (+f.amount || 0) * payF * Math.pow(1 + (+f.growth || 0) / 100, yearsIn)
+        : f.kind === 'spend' ? -(+f.amount || 0) * (f.inflates ? infF : 1) : +f.amount || 0;
+      bundleNet[f.bundle] = (bundleNet[f.bundle] || 0) + v;
+    }
     const payments = evs.filter(e => e.amount < 0).reduce((s, e) => s + e.amount, 0);
     const receipts = evs.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
     for (const e of evs) if (e.settles && other[e.settles] != null) other[e.settles] = 0;
@@ -191,7 +199,7 @@ function project(data, scenarioKey, months) {
     }
     const otherTotal = Object.values(other).reduce((s, v) => s + v, 0);
     rows.push({
-      k, date, income, spend, buffer, surplus, events: evs, payments, receipts,
+      k, date, income, spend, buffer, surplus, events: evs, bundleNet, payments, receipts,
       opening, before, topUp, withdraw, shortfall, closing: cash,
       freshStart, replStart, cap, freshEnd: fresh, freshBy: { ...freshBy }, replEnd: repl, taxYear: tyNow,
       isaSS, isaCash, isa: isaSS + isaCash, growth, other: otherTotal,
