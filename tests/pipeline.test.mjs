@@ -68,7 +68,7 @@ assert.ok(Math.abs(c.long.forward[4] - f(10, 2)) < 1e-12);
 // and whatever the label says, maturities that stop at 5 are years, ones running to 60 are months.
 const bankMonths = months.map(m => m * 1.00000004);
 for (const [label, mats] of [['months:', bankMonths], ['months:', months.map(m => m / 12)], ['years:', months.map(m => m / 12)], ['', months.map(m => m / 12)], ['Maturity (months)', months]]) {
-  const S = { ...sheets, '1. fwds, short end': sheetOf(label, mats, m => (mats === months || mats === bankMonths ? m / 12 : m)), '3. spot, short end': sheetOf(label, mats, m => (mats === months || mats === bankMonths ? m / 12 : m)) };
+  const S = { ...sheets, '1. fwds, short end': sheetOf(label, mats, m => (mats === months || mats === bankMonths ? Math.round(m) / 12 : m)), '3. spot, short end': sheetOf(label, mats, m => (mats === months || mats === bankMonths ? Math.round(m) / 12 : m)) };
   const v = oisCurve(S);
   assert.ok(v.shortEnd.forward.every(x => x != null) && Math.abs(v.shortEnd.forward[11] - f(1, 2)) < 1e-12, `short end headed "${label}" ${mats === bankMonths ? 'in the Bank’s not-quite-whole months' : mats === months ? 'in months' : 'in years'}`);
 }
