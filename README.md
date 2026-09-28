@@ -28,7 +28,9 @@ The projection logic reproduces the original spreadsheet exactly (see `tests/eng
 
 1. In this repository on github.com: **Settings → Pages**.
 2. Under *Build and deployment*, set Source to **Deploy from a branch**, branch **main**, folder **/ (root)**, then **Save**.
-3. After a minute the site is at `https://<your-username>.github.io/<repo-name>/`.
+3. After a minute the site is at **https://mc392.github.io/tally/**.
+
+`.nojekyll` tells GitHub Pages to serve the files exactly as they are, without running its Jekyll site builder over them.
 
 This repository can safely be public: it holds only code. Your data file stays in your own cloud storage.
 
