@@ -22,8 +22,13 @@
 //              its costs. effectiveFlows() is the one place those three are applied.
 //              An income line in a bundle may be NEGATIVE: that is how a drop in pay (parental leave, a
 //              sabbatical) is written, so switching the event off gives the usual pay back untouched.
+//
+// Version 4 (Sep 2026):
+//   rules.remortgage - remortgage planning settings: {leadMonths, decideMonths, earmarkMonths, warnAt,
+//              glide, glideMonths, target}. See readiness() in engine.js.
 const TallyModel = (() => {
-  const VERSION = 3;
+  const VERSION = 4;
+  const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
   const ACCESS = { instant: 'Instant access', notice: 'Notice account', fixed: 'Fixed term', invested: 'Invested', locked: 'Locked away' };
@@ -99,6 +104,7 @@ const TallyModel = (() => {
     const r = d.rules ||= {};
     const who = isaPeople(d);
     r.isaPerPerson ??= ISA_PER_PERSON;
+    r.remortgage = Object.assign({}, REMORTGAGE, r.remortgage || {});
     r.isaUsedBy ||= {};
     // fill order: keep the saved order, drop anyone who no longer exists, add anyone new at the end
     r.isaFillOrder = (r.isaFillOrder || []).filter(p => who.includes(p));
@@ -150,7 +156,7 @@ const TallyModel = (() => {
     return { from: starts[0] || null, to: open ? null : ends.at(-1) };
   }
 
-  return { VERSION, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
+  return { VERSION, REMORTGAGE, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyModel;

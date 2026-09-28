@@ -73,6 +73,8 @@ Phase 1 needs a richer data model. Doing this first avoids rewriting the engine 
 The goal: arrive at the remortgage date with the right amount of accessible cash to make the best decision, without having accidentally spent it or locked it up in the meantime.
 
 ### 1.1 Remortgage readiness dashboard
+
+> **Status: done (28 Sep 2026)**, towards the earliest part's fix end. Earmarks include life-event costs and pay drops as well as one-offs. Within-weeks (notice) money counts as available.
 A new screen reached from Plan → Mortgage, pinned to the fix end date.
 
 **What Matt sees**
@@ -97,6 +99,8 @@ A new screen reached from Plan → Mortgage, pinned to the fix end date.
 - Moving a big spend from before the fix end to after it changes "Available to overpay" by exactly that amount, less its effect on earmarks.
 
 ### 1.2 Lock-up and leakage warnings
+
+> **Status: done (28 Sep 2026).** One chip for any change, not a chip per field: the check runs after every save.
 Stops money being tied up or spent before the decision point without Matt noticing.
 
 **What Matt sees**
@@ -113,6 +117,8 @@ Stops money being tied up or spent before the decision point without Matt notici
 - Adding a 2-year bond with money needed at a fix end 18 months away raises a warning showing the correct amount.
 
 ### 1.3 Glide path before the remortgage
+
+> **Status: done (28 Sep 2026).** Both rules act on the S&S share of top-ups only.
 An optional rule that changes how the projection saves as the decision nears.
 
 **What Matt sees**

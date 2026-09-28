@@ -125,7 +125,20 @@ function restore() {
   try { const s = JSON.parse(localStorage.getItem(STORE) || 'null'); if (s && s.data) { data = normalise(s.data); Object.assign(meta, s.meta || {}); } } catch (e) { }
 }
 let edits = 0; // counts changes, so a change made while a save is being written isn't marked saved
-function changed(msg) { edits++; meta.dirty = true; persist(); render(); if (msg) toast(msg); autoSaveSoon(); }
+function changed(msg) { edits++; meta.dirty = true; persist(); checkLeak(); render(); if (msg) toast(msg); autoSaveSoon(); }
+// ---------- lock-up and leakage warnings (Phase 1.2) ----------
+// After every change, "available to overpay" at the next fix end is worked out again and compared with
+// the figure before the change. A drop bigger than the threshold (default £5,000) raises a warning.
+let lastAvail = null;
+function readyNow() { try { const R = readiness(data, data.scenario || 'cautious', thisMonth()); return R.none ? null : R; } catch (e) { return null; } }
+function readyBaseline() { const R = data && readyNow(); lastAvail = R ? R.available : null; }
+function checkLeak() {
+  const R = readyNow(), now = R ? R.available : null;
+  const warnAt = +(data.rules.remortgage || {}).warnAt || 5000;
+  if (lastAvail != null && now != null && lastAvail - now > warnAt) ui.leak = { before: lastAvail, after: now, fixEnd: R.fixEnd };
+  lastAvail = now;
+}
+const leakChip = () => ui.leak ? `<div class="warnchip" role="alert"><div><b>Less free at your remortgage</b><br>That change cuts what’s available to overpay in ${fMonth(ui.leak.fixEnd)} from ${money(ui.leak.before)} to ${money(ui.leak.after)} (${money(ui.leak.after - ui.leak.before, { sign: true })}).</div><button data-act="leak-ok" aria-label="Dismiss">OK</button></div>` : '';
 
 // ---------- file storage: your file, your cloud (routes live in storage.js) ----------
 const TS = TallyStorage;
@@ -277,6 +290,7 @@ async function loadText(text, name, { quiet = false } = {}) {
   meta.savedAt = d.savedAt || null; meta.base = writer; meta.encrypt = !!s;
   if (s) { seal = s; await TS.kvSet('seal', s); }
   ui.stacks = { home: [], accounts: [], projection: [], plan: [] }; ui.tab = 'home';
+  ui.leak = null; readyBaseline();
   persist(); render();
   toast(quiet ? `Loaded the latest from ${writer && writer.label || 'your file'}` : 'Opened ' + (name || 'file'));
   return true;
@@ -729,6 +743,71 @@ function vEvents() {
   };
 }
 
+// ---------- remortgage readiness (Phase 1.1, 1.3) ----------
+function vReady() {
+  const sk = scenarioKey(), R = readiness(data, sk, thisMonth());
+  const back = { title: 'Remortgage readiness', large: true, back: 'Mortgage', right: `<button class="pill" data-act="edit-remortgage" style="color:var(--accent)">Settings</button>` };
+  if (R.none) return { ...back, body: `<p class="note">${R.none === 'balances' ? 'Add your balances first.' : 'Set a “Fixed until” date on your mortgage (or one of its parts) to plan for the remortgage.'}</p>` };
+  const pn = esc(partName(R.part, R.partIndex)), away = m => m <= 0 ? 'now' : m === 1 ? 'next month' : `in ${m} months`;
+  const mAway = d => ymKeyOf(d) - ymKeyOf(todayISO());
+  const L = R.ladder, sc = data.scenarios;
+  const invRange = Object.entries(R.invested).map(([k, v]) => `${esc(sc[k].name)} ${short(v)}`).join(' · ');
+  const top = R.earmarkItems.slice(0, 2).map(x => esc(x.label));
+  const whose = pn === 'Mortgage' ? 'your' : pn + '’s', many = R.earmarkItems.length > 1;
+  const verdict = (R.available >= 0
+    ? `On current plans you’ll have <b>${short(R.available)}</b> free to overpay when ${whose} fix ends in ${fMonth(R.fixEnd)}.`
+    : `On current plans you’d be <b>${short(-R.available)} short</b> of your cash floor and what’s already spoken for when ${whose} fix ends in ${fMonth(R.fixEnd)}, so there is nothing free to overpay.`) +
+    (R.earmarks > 0.5 ? ` ${top.join(' and ')}${R.earmarkItems.length > 2 ? ' and others' : ''} ${many ? 'take' : 'takes'} ${short(R.earmarks)} in the ${R.earmarkMonths} months after the switch, which is kept aside for ${many ? 'them' : 'it'}.` : '');
+  const tgt = R.target == null ? row({ title: 'Overpayment target', value: 'Not set', act: 'edit-remortgage' })
+    : row({ title: 'Overpayment target', value: amt(R.target), act: 'edit-remortgage' }) + (R.met
+      ? row({ title: 'On track', sub: `${short(R.available - R.target)} to spare`, value: '<span class="pill ok">Met</span>' })
+      : row({ title: `${short(R.shortfall)} short at the fix end`, sub: R.clears ? `Reaches the target in ${fMonth(R.clears)}` : 'Not reached within 10 years on current plans', value: '<span class="pill warn">Short</span>' }));
+  const rm = data.rules.remortgage;
+  return {
+    ...back,
+    body: `<div class="hero"><div class="cap">${pn === 'Mortgage' ? 'Fix ends' : pn + ' fix ends'} ${fMonth(R.fixEnd)}</div><div class="big">${R.monthsAway}<span class="p"> months</span></div><div class="eq">Available to overpay ${amt(R.available)}</div></div>
+      <p class="note">${verdict}</p>
+      ${group(
+        row({ title: 'A new deal can usually be secured', value: fMonth(R.dates.secure), vsub: away(mAway(R.dates.secure)) }) +
+        row({ title: 'Decide by', value: fMonth(R.dates.decide), vsub: away(mAway(R.dates.decide)) }) +
+        row({ title: 'Switch', value: fMonth(R.dates.switch), vsub: away(mAway(R.dates.switch)) }), 'Key dates', `Lenders typically let you secure a deal ${rm.leadMonths} months ahead. Change these under Settings.`)}
+      ${group(
+        row({ title: 'Instant', sub: 'Current accounts, instant savings, flexible cash ISAs', value: amt(L.instant) }) +
+        row({ title: 'Within weeks', sub: 'Notice accounts', value: amt(L.notice) }) +
+        row({ title: 'Sellable, at market value', sub: `${invRange} · markets −20%: ${short(R.investedStressed)}`, value: amt(L.invested) }) +
+        row({ title: 'Not available', sub: 'Fixed-term accounts maturing later, and pensions', value: amt(L.fixed + L.locked) }) +
+        (Math.abs(L.debts) > 0.5 ? row({ title: 'Other debts', sub: '0% cards and tax owed', value: amt(L.debts, { color: true }) }) : ''),
+        `Where your money will be<b>end of ${fMonth(R.atDate)}</b>`, 'S&S ISAs can be sold, but what they fetch moves with markets, so they are not counted as available.')}
+      ${group(
+        row({ title: 'Instant and within weeks', value: amt(R.accessible) }) +
+        row({ title: 'Less your cash floor', value: amt(-R.floor, { color: true }) }) +
+        row({ title: `Less earmarked, ${R.earmarkMonths} months from the switch`, value: amt(-R.earmarks, { color: true }) }) +
+        row({ title: 'Available to overpay', value: amt(R.available, { color: true }), cls: 'total' }), 'Available to overpay')}
+      ${R.earmarkItems.length ? group(R.earmarkItems.map(x => row({ title: esc(x.label), sub: `from ${fMonth(x.first)}`, value: amt(-x.amount, { color: true }) })).join(''), 'Earmarked', 'One-off payments, and the costs and pay drops of life events, in the months after the switch.') : ''}
+      ${group(tgt + row({ title: 'Glide path', sub: rm.glide ? `For ${rm.glideMonths} months before the fix end, new savings are held as cash ISA, not S&S` : 'Off: top-ups follow your usual S&S split', value: rm.glide ? '<span class="pill ok">On</span>' : '<span class="pill">Off</span>', act: 'edit-remortgage' }), 'Getting ready')}
+      ${R.laterParts.length ? `<p class="note">After this: ${R.laterParts.map(x => `${esc(partName(x.part, x.index))}’s fix ends ${fMonth(x.fixEnd)}`).join('; ')}. Its readiness appears here once this one has passed.</p>` : ''}
+      <p class="note">Worked out in the ${esc(sc[sk].name)} scenario. Figures are projections, not advice.</p>`,
+  };
+}
+function remortgageSheet() {
+  const rm = data.rules.remortgage;
+  formSheet({
+    title: 'Remortgage settings', values: { ...rm },
+    sections: [
+      { head: 'Dates', fields: [{ key: 'leadMonths', label: 'Deal can be secured', type: 'number', unit: 'months before', hint: 'Often 3 to 6' }, { key: 'decideMonths', label: 'Decide', type: 'number', unit: 'months before' }] },
+      { head: 'What counts as spoken for', foot: 'Payments and life-event costs in this many months from the switch are taken off what’s available to overpay.', fields: [{ key: 'earmarkMonths', label: 'Earmark', type: 'number', unit: 'months' }] },
+      { head: 'Getting ready', foot: 'A target makes the projection hold back from S&S ISAs, keeping new savings as cash ISA until you would have that much free at the fix end. The glide path does the same for a fixed number of months regardless.', fields: [
+        { key: 'target', label: 'Overpayment target', type: 'money', optional: true, ph: 'None' },
+        { key: 'glide', label: 'Glide path', type: 'toggle' }, { key: 'glideMonths', label: 'For', type: 'number', unit: 'months before' }] },
+      { head: 'Warnings', fields: [{ key: 'warnAt', label: 'Warn when a change cuts it by more than', type: 'money' }] }],
+    onSave: v => {
+      Object.assign(rm, { leadMonths: Math.max(0, Math.round(v.leadMonths)), decideMonths: Math.max(0, Math.round(v.decideMonths)), earmarkMonths: Math.max(1, Math.round(v.earmarkMonths) || 12),
+        target: v.target > 0 ? v.target : null, glide: v.glide, glideMonths: Math.max(1, Math.round(v.glideMonths) || 12), warnAt: Math.max(0, v.warnAt) });
+      changed('Settings saved');
+    },
+  });
+}
+
 // ---------- life events ----------
 // How much an event adds (+) or takes away (−) over the projection horizon, in the default scenario.
 function bundleImpact(id) {
@@ -842,6 +921,8 @@ function vMortgage() {
   const home = row({ title: 'Home value', value: m.propertyValue ? amt(m.propertyValue) : 'Not set', act: 'edit-home' });
   const addPart = row({ title: 'Add a part', act: 'add-part', cls: 'act-row', chev: false });
   let body, outlook = '';
+  const Rn = readyNow();
+  const readyGroup = Rn ? group(row({ title: 'Remortgage readiness', sub: `${esc(partName(Rn.part, Rn.partIndex))} · fix ends ${fMonth(Rn.fixEnd)}`, value: amt(Rn.available), vsub: 'free to overpay', act: 'push', arg: 'ready' })) : '';
   if (one) {
     const o = partOutlook(pr, parts[0]);
     body = group(partDetails(parts[0], 0) + home, 'Details') +
@@ -862,7 +943,7 @@ function vMortgage() {
   return {
     title: 'Mortgage', large: true, back: 'Plan', right: one ? `<button class="pill" data-act="edit-part" data-arg="${esc(parts[0].id)}" style="color:var(--accent)">Edit</button>` : '',
     body: `<div class="hero"><div class="cap">Monthly payment${one ? '' : `, ${parts.length} parts`}</div><div class="big amt">${money(mt.payment, { dp: 0 }).replace('£', '<span class="p">£</span>')}</div>${eq != null ? `<div class="eq">Home equity ${amt(eq)}</div>` : ''}</div>
-      ${body}${outlook ? group(outlook, 'Projection') : ''}
+      ${readyGroup}${body}${outlook ? group(outlook, 'Projection') : ''}
       <p class="note">${anyFull ? `The projection runs ${one ? 'the balance' : 'each part'} down month by month. If you set a rate after the fix and an end date, the payment is recalculated when the fix ends and flows into your monthly surplus.${one ? '' : ' A part that is paid off stops costing anything.'}` : `Add the balance and rate to see the balance fall over time, and a post-fix rate to model a remortgage. Until then, the payment${one ? '' : 's'} above ${one ? 'is' : 'are'} used as a flat monthly cost.`}</p>`,
   };
 }
@@ -1130,7 +1211,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -1146,7 +1227,7 @@ function render(opts = {}) {
   const backLabel = ui.stacks[ui.tab].length > 1 ? 'Back' : TABN[ui.tab];
   $('#navL').innerHTML = v.back ? `<button class="back" data-act="back">${BACK}${esc(backLabel)}</button>` : '';
   $('#navR').innerHTML = v.right || '';
-  $('#main').innerHTML = `<div class="page ${ui.anim}">${v.large && !v.noNav ? `<h1 class="large">${esc(v.title)}</h1>` : ''}${v.body}</div>`;
+  $('#main').innerHTML = `<div class="page ${ui.anim}">${v.large && !v.noNav ? `<h1 class="large">${esc(v.title)}</h1>` : ''}${data ? leakChip() : ''}${v.body}</div>`;
   ui.anim = '';
   document.querySelectorAll('#tabbar button').forEach(b => { const on = b.dataset.arg === ui.tab; b.classList.toggle('on', on); b.setAttribute('aria-current', on ? 'page' : 'false'); });
   if (opts.top) window.scrollTo(0, 0);
@@ -1175,6 +1256,7 @@ const actions = {
   'add-spend': c => bundleArg(c) ? spendSheet(null, null, bundleArg(c)) : spendSheet(null, c), 'edit-spend': id => spendSheet(id),
   'add-event': a => eventSheet(null, bundleArg(a)), 'edit-event': id => eventSheet(id),
   'add-bundle': templatePicker, 'edit-bundle': bundleSheet,
+  'edit-remortgage': remortgageSheet, 'leak-ok': () => { ui.leak = null; render(); },
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),
   'del-snap': d => { if (!confirm(`Delete the update from ${fDate(d)}?`)) return; data.snapshots = data.snapshots.filter(s => s.date !== d); ui.stacks[ui.tab].pop(); changed('Update deleted'); },
@@ -1198,6 +1280,7 @@ window.addEventListener('beforeunload', e => { if (meta.dirty && !framed) { e.pr
 
 // ---------- start ----------
 restore();
+readyBaseline();
 if (!framed && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
 if (!framed) { const l = document.createElement('link'); l.rel = 'manifest'; l.href = 'manifest.webmanifest'; document.head.appendChild(l); }
 render();

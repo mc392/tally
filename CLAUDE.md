@@ -23,23 +23,32 @@ All reading and writing of the finance file goes through `storage.js`; `app.js` 
 - `node tests/mortgage.test.js` - mortgage parts, also worked by hand.
 - `node tests/migration.test.js` - a v1 file migrates and projects **identically** to the frozen pre-v2 engine (`tests/fixtures/engine-v1.js`, never edit it), then dated flows, per-person ISAs, access and pensions.
 - `node tests/lifeevents.test.js` - the roadmap's done-when for 1.5: baby template months, off = identical projection, shifted = created later, scale and contingency, every template builds valid lines.
+- `node tests/readiness.test.js` - the ladder at the fix end and its reconciliation to net worth, moving a spend across the fix end, a bond that locks money up, glide path and target, earliest part wins; all worked by hand.
 - `node tests/storage.test.js` - encryption round trip, wrong passphrase, tampering, IV reuse, conflict rules.
 - `node tests/browser.test.mjs` - the real app in headless Chromium (needs `npm i --no-save playwright`): live save, picking up another device's save, refusing to overwrite it, encryption on, reopening, unlocking on a new device, no CSP violations. Uses a fake file handle, never a real file.
 - `sw.js`'s `CACHE` must be bumped when a shell file is added or renamed.
 
-## Data file shape (version 3, Sep 2026)
+## Data file shape (version 4, Sep 2026)
 `model.js` owns the shape: `TallyModel.migrate()` upgrades any older file on open (`normalise()` calls it first), and the file on disk only changes when it is next saved. `engine.js` only ever sees the current version. **A change to the shape means bumping `VERSION`, adding a step to `migrate()`, and a test in `tests/migration.test.js`.**
 `people[]`, `accounts[] {id,name,owner,type,rate,active,note,access?,noticeDays?,maturity?,flexible?}`, `snapshots[] {date, balances{accountId: amount}}` (liabilities negative),
 `flows[] {id,name,kind:'income'|'spend'|'oneoff',amount,start,end,category,owner,inflates,growth,bundle,on,linked?,settles?}`, `bufferPct`,
 `bundles[] {id,name,template,start,on,scale,contingency}` (v3, life events),
 `mortgage {propertyValue, parts[] {id,name,payment,balance,rate,fixEnd,newRate,termEnd}}`,
-`rules {cashFloor,isaPerPerson,isaUsedBy{personId:£},isaFillOrder[],isaUsedTaxYear,sweepToSS}`, `scenarios{key:{name,growth,ssReturn,inflation,payRise}}`, `scenario`, `horizonMonths`.
+`rules {cashFloor,isaPerPerson,isaUsedBy{personId:£},isaFillOrder[],isaUsedTaxYear,sweepToSS,remortgage{leadMonths,decideMonths,earmarkMonths,warnAt,glide,glideMonths,target}}` (remortgage: v4), `scenarios{key:{name,growth,ssReturn,inflation,payRise}}`, `scenario`, `horizonMonths`.
 - **Flows** replaced v1's `income[]`, `spending[]` and `events[]`. Income and spend amounts are **monthly and positive**; a one-off is the total, **signed** (− = money out) and happens in its `start` month. `start`/`end` are `'YYYY-MM'` or null; `TallyModel.flowActive(f, k)` is the only test of whether a flow counts in a month. `monthlyBudget(data, 'YYYY-MM')` is the regular budget for one month (one-offs excluded). `linked:'mortgage'` on a spend flow is how the mortgage enters spending. `bundle` names the life event a flow belongs to.
 - **A newer file is refused.** `loadText()` will not open a file whose `version` is above `TallyModel.VERSION`: an out-of-date copy of the app (the service worker serves the cached one first) would drop what it does not know about and save the loss back.
 - **ISA allowance is per person** (`isaPerPerson`, default £20,000), filled in `isaFillOrder` - the first person's allowance is used up before the next person's (decided with Matt). The Joint person (`id:'J'`) never holds an ISA. Migration splits the old household figure evenly and puts what was already used against people in fill order, which keeps every projected figure identical. Re-deposit room is still tracked for the household, and every cash ISA is treated as flexible in the projection; `accounts[].flexible` is recorded for Phase 1 readiness but not yet used by the engine.
 - **Access** (`instant|notice|fixed|invested|locked`, labels in `TallyModel.ACCESS`): defaulted by type on migration; liabilities have none. Recorded now, used by the Phase 1 readiness ladder.
 - **Pension** is an account type (pool `other`, grows at its own rate like savings, access `locked`).
 Account types: ss_isa, cash_isa, savings, current, pension, card, card_0, tax. Cash pool = current + card. ISA pot = ss_isa + cash_isa.
+
+## Remortgage readiness (Phase 1.1-1.3, Sep 2026)
+- **`readiness(data, scenario, 'YYYY-MM')` in `engine.js` is the one answer** to "what will be free at the remortgage". It works towards the **earliest** mortgage part's fix end still to come (decided with Matt); later parts are listed and get their turn when that one passes. "At the fix end" = balances at the end of the month **before** the switch month.
+- **Available to overpay = instant + within weeks − cash floor − earmarks.** Earmarks are the positive `rows[].earmark` of the `earmarkMonths` (12) months from the switch: one-off payments out, plus life-event costs and life-event pay drops. S&S ISAs are shown (every scenario, and markets −20%) but never counted as available.
+- **`rows[].byAccess` {instant, notice, invested, fixed, locked, debts} adds up to `net` every month** - there is a test. A fixed account counts as instant from its maturity month. Liabilities (cards, tax) are `debts`.
+- **Cash ISAs marked fixed or notice are held apart** (`heldIsa`): never drawn on to top up the floor, grow at their own rate, and a fixed one joins the ordinary cash ISA pool when it matures. Every migrated cash ISA is instant, so existing figures do not move. `isaCash` in a row still includes them; `isaCashFlex` is the drawable pool.
+- **Glide path and target (1.3)** act only on the S&S share of top-ups before the fix end: glide sends none to S&S in the last `glideMonths`; a target lets S&S take only what is left once available would still reach the target. Neither moves money that is already invested.
+- **Warnings (1.2):** `checkLeak()` runs in every `changed()`, compares available with the figure before the change, and raises `ui.leak` (the orange chip) when it drops by more than `warnAt` (£5,000). It uses the default scenario, not the one being viewed.
 
 ## Life events (Phase 1.5, Sep 2026)
 A life event is a **bundle**: a row in `bundles[]` plus ordinary flows carrying `bundle: id`, with real dates.

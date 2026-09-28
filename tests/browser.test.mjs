@@ -234,6 +234,33 @@ try {
   ok(!!(await page.$('#c-proj rect')), 'the projection chart shows the event as a shaded band');
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
+  console.log('Remortgage readiness');
+  await page.click('#tabbar [data-arg="plan"]'); await page.click('#tabbar [data-arg="plan"]'); // second tap goes back to the top of Plan
+  await page.click('[data-act="push"][data-arg="mortgage"]');
+  await page.click('[data-act="push"][data-arg="ready"]');
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('Available to overpay'));
+  const R = await page.evaluate(() => readiness(data, scenarioKey(), thisMonth()));
+  const readyText = await page.textContent('#main');
+  ok(R.fixEnd === '2027-06-01' && readyText.includes('Key dates') && readyText.includes('Where your money will be'), 'readiness screen shows the fix end, key dates and the ladder');
+  ok((await page.textContent('#main')).includes(await page.evaluate(v => money(v), R.available)), 'the figure on screen is the engine’s available-to-overpay');
+  // a big spend just before the fix end raises the lock-up warning with before and after figures
+  await page.evaluate(() => { data.flows.push({ id: 'big', name: 'Extension', kind: 'oneoff', amount: -20000, start: '2027-03', end: '2027-03', category: 'One-off', on: true, bundle: null }); changed(); });
+  await page.waitForSelector('.warnchip');
+  const leak = await page.evaluate(() => ui.leak);
+  ok(Math.round(leak.before - leak.after) >= 5000 && (await page.textContent('.warnchip')).includes('Less free at your remortgage'), 'a £20k spend before the fix end raises the warning, with before and after figures');
+  await page.click('.warnchip [data-act="leak-ok"]');
+  ok(!(await page.$('.warnchip')), 'the warning can be dismissed');
+  await page.evaluate(() => { data.flows = data.flows.filter(f => f.id !== 'big'); changed(); });
+  ok(!(await page.$('.warnchip')), 'a change that adds money back raises nothing');
+  await page.click('#navR [data-act="edit-remortgage"]');
+  await page.waitForSelector('.sheet-wrap.open #f_target');
+  await page.fill('.sheet-wrap.open #f_target', '1000000');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.rules.remortgage.target === 1000000);
+  ok((await page.textContent('#main')).includes('short at the fix end'), 'an out-of-reach target shows the shortfall');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+  await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-readiness.png'), fullPage: true });
+
   console.log('Newer files');
   const refused = await page.evaluate(async () => { const f = JSON.stringify({ app: 'tally', version: TallyModel.VERSION + 1, accounts: [], snapshots: [] }); return await loadText(f, 'future.json'); });
   ok(refused === false && await page.evaluate(() => data.bundles.length === 1), 'a file from a newer Tally is refused, and nothing is replaced');
