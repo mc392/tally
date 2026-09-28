@@ -1,0 +1,9 @@
+# Never commit your financial data. The app reads it from your own iCloud Drive / OneDrive file.
+family-finances*.json
+*.tally
+data/
+.DS_Store
+node_modules/
+
+# Anything under tests/private stays on your machine (e.g. checks against your real spreadsheet).
+tests/private/

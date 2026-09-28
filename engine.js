@@ -1,0 +1,161 @@
+// ---------- Tally projection engine (pure functions, no UI) ----------
+const GROUPS = {
+  ss_isa:   { label: 'Stocks & shares ISAs', pool: 'isa',  kind: 'ss' },
+  cash_isa: { label: 'Cash ISAs',            pool: 'isa',  kind: 'cash' },
+  savings:  { label: 'Savings',              pool: 'other' },
+  current:  { label: 'Current accounts',     pool: 'cash' },
+  card:     { label: 'Credit cards',         pool: 'cash' },
+  card_0:   { label: '0% credit cards',      pool: 'other' },
+  tax:      { label: 'Tax owed',             pool: 'other' },
+};
+
+function ym(dateStr) { const [y, m] = dateStr.split('-').map(Number); return { y, m }; }
+function ymKey(y, m) { return y * 12 + (m - 1); }
+function keyToDate(k) { const y = Math.floor(k / 12), m = (k % 12) + 1; return `${y}-${String(m).padStart(2, '0')}-01`; }
+function taxYearOf(k) { const y = Math.floor(k / 12), m = (k % 12) + 1; return m >= 4 ? y : y - 1; }
+function annuity(bal, ratePct, n) {
+  if (n <= 0) return bal;
+  const r = ratePct / 100 / 12;
+  return r === 0 ? bal / n : bal * r / (1 - Math.pow(1 + r, -n));
+}
+
+function latestSnapshot(data) {
+  const s = [...data.snapshots].sort((a, b) => a.date.localeCompare(b.date));
+  return s[s.length - 1] || null;
+}
+
+function snapshotTotals(data, snap) {
+  const t = { cash: 0, isa: 0, isaSS: 0, isaCash: 0, other: 0, net: 0, byType: {}, byOwner: {} };
+  if (!snap) return t;
+  for (const a of data.accounts) {
+    const v = snap.balances[a.id];
+    if (v == null) continue;
+    const g = GROUPS[a.type] || GROUPS.savings;
+    t[g.pool] += v;
+    if (a.type === 'ss_isa') t.isaSS += v;
+    if (a.type === 'cash_isa') t.isaCash += v;
+    t.byType[a.type] = (t.byType[a.type] || 0) + v;
+    t.byOwner[a.owner] = (t.byOwner[a.owner] || 0) + v;
+    t.net += v;
+  }
+  return t;
+}
+
+function monthlyBudget(data) {
+  const income = data.income.reduce((s, i) => s + (+i.monthly || 0), 0);
+  const spend = data.spending.reduce((s, l) => s + (l.linked === 'mortgage' ? (+data.mortgage.payment || 0) * 12 : (+l.annual || 0)), 0) / 12;
+  const buffer = spend * (+data.bufferPct || 0) / 100;
+  return { income, spend, buffer, out: spend + buffer, surplus: income - spend - buffer };
+}
+
+function project(data, scenarioKey, months) {
+  const sc = data.scenarios[scenarioKey || data.scenario];
+  const snap = latestSnapshot(data);
+  if (!snap) return null;
+  const start = ym(snap.date);
+  const k0 = ymKey(start.y, start.m);
+  const r = data.rules;
+  const accs = data.accounts;
+
+  // opening positions
+  let cash = 0, isaSS = 0, isaCash = 0;
+  const other = {};           // accountId -> balance (savings, 0% cards, tax)
+  let cashIsaRateW = 0;
+  for (const a of accs) {
+    const v = snap.balances[a.id]; if (v == null) continue;
+    const g = GROUPS[a.type] || GROUPS.savings;
+    if (g.pool === 'cash') cash += v;
+    else if (a.type === 'ss_isa') isaSS += v;
+    else if (a.type === 'cash_isa') { isaCash += v; cashIsaRateW += v * (+a.rate || 0); }
+    else other[a.id] = v;
+  }
+  const cashIsaRate = isaCash ? cashIsaRateW / isaCash : 3;
+  const ssShare = Math.min(100, Math.max(0, +r.sweepToSS || 0)) / 100;
+
+  const m = data.mortgage || {};
+  let mBal = m.balance != null && m.balance !== '' ? +m.balance : null;
+  let mPay = +m.payment || 0;
+  const fixEndK = m.fixEnd ? ymKey(ym(m.fixEnd).y, ym(m.fixEnd).m) : null;
+  const termEndK = m.termEnd ? ymKey(ym(m.termEnd).y, ym(m.termEnd).m) : null;
+
+  let ty = taxYearOf(k0);
+  let fresh = Math.max(0, (+r.isaAllowance || 0) - (ty === +r.isaUsedTaxYear ? (+r.isaUsed || 0) : 0));
+  let repl = 0;
+  const rows = [];
+
+  for (let i = 0; i < months; i++) {
+    const k = k0 + i;
+    const date = keyToDate(k);
+    const tyNow = taxYearOf(k);
+    if (tyNow !== ty) { ty = tyNow; fresh = +r.isaAllowance || 0; repl = 0; }
+    const yearsIn = tyNow - taxYearOf(k0);             // annual steps each April
+    const payF = Math.pow(1 + (sc.payRise || 0) / 100, yearsIn);
+    const infF = Math.pow(1 + (sc.inflation || 0) / 100, yearsIn);
+
+    // mortgage
+    let mortgageInterest = 0;
+    if (mBal != null && m.rate != null && m.rate !== '') {
+      if (fixEndK != null && k === fixEndK && m.newRate != null && m.newRate !== '' && termEndK != null) {
+        mPay = annuity(mBal, +m.newRate, termEndK - k);
+      }
+      const rate = (fixEndK != null && k >= fixEndK && m.newRate != null && m.newRate !== '') ? +m.newRate : +m.rate;
+      mortgageInterest = mBal * rate / 100 / 12;
+      const pay = Math.min(mPay, mBal + mortgageInterest);
+      mBal = Math.max(0, mBal + mortgageInterest - pay);
+    }
+
+    const income = data.income.reduce((s, x) => s + (+x.monthly || 0) * payF * Math.pow(1 + (+x.growth || 0) / 100, yearsIn), 0);
+    let spend = 0;
+    for (const l of data.spending) {
+      if (l.linked === 'mortgage') spend += mPay;
+      else spend += (+l.annual || 0) / 12 * (l.inflates ? infF : 1);
+    }
+    const buffer = spend * (+data.bufferPct || 0) / 100;
+    const surplus = income - spend - buffer;
+
+    const evs = data.events.filter(e => e.on && e.date && ymKey(ym(e.date).y, ym(e.date).m) === k);
+    const payments = evs.filter(e => e.amount < 0).reduce((s, e) => s + e.amount, 0);
+    const receipts = evs.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
+    for (const e of evs) if (e.settles && other[e.settles] != null) other[e.settles] = 0;
+
+    const opening = cash;
+    const before = opening + surplus + payments + receipts;
+    const freshStart = fresh, replStart = repl, cap = fresh + repl;
+    let topUp = 0, withdraw = 0, shortfall = 0;
+    const floor = +r.cashFloor || 0;
+    if (before > floor) {
+      topUp = Math.min(before - floor, cap);
+      const fromRepl = Math.min(topUp, repl); repl -= fromRepl; fresh -= (topUp - fromRepl);
+      isaCash += topUp * (1 - ssShare); isaSS += topUp * ssShare;
+    } else if (before < floor) {
+      const need = floor - before;
+      withdraw = Math.min(need, isaCash + isaSS);
+      shortfall = need - withdraw;
+      const fromCash = Math.min(withdraw, isaCash); isaCash -= fromCash; isaSS -= (withdraw - fromCash);
+      repl += withdraw;
+    }
+    cash = before - topUp + withdraw;
+
+    let growth = 0;
+    if (sc.growth) {
+      const gSS = isaSS * (sc.ssReturn || 0) / 100 / 12;
+      const gC = isaCash * cashIsaRate / 100 / 12;
+      isaSS += gSS; isaCash += gC; growth = gSS + gC;
+      for (const a of accs) if (other[a.id] != null && a.type === 'savings') {
+        const g = other[a.id] * (+a.rate || 0) / 100 / 12; other[a.id] += g; growth += g;
+      }
+    }
+    const otherTotal = Object.values(other).reduce((s, v) => s + v, 0);
+    rows.push({
+      k, date, income, spend, buffer, surplus, events: evs, payments, receipts,
+      opening, before, topUp, withdraw, shortfall, closing: cash,
+      freshStart, replStart, cap, freshEnd: fresh, replEnd: repl, taxYear: tyNow,
+      isaSS, isaCash, isa: isaSS + isaCash, growth, other: otherTotal,
+      mortgageBal: mBal, mortgagePay: mPay, mortgageInterest,
+      net: cash + isaSS + isaCash + otherTotal,
+    });
+  }
+  return { start: keyToDate(k0), snapDate: snap.date, rows, cashIsaRate };
+}
+
+if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, GROUPS };
