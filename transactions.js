@@ -51,7 +51,7 @@ const TallyTx = (() => {
         const debit = money(r[h['Debit Amount']]), credit = money(r[h['Credit Amount']]);
         return {
           date: ukDate(r[h['Transaction Date']]), amount: (credit || 0) - (debit || 0), description: clean(r[h['Transaction Description']]), raw: r[h['Transaction Description']],
-          type: clean(r[h['Transaction Type']]), bankCategory: null,
+          type: clean(r[h['Transaction Type']]), bankCategory: null, balance: money(r[h.Balance]),
           // the running balance makes each row unique, even two identical payments on the same day
           key: [r[h['Transaction Date']], debit, credit, clean(r[h['Transaction Description']]), r[h['Balance']]].join('|'),
         };
@@ -105,7 +105,7 @@ const TallyTx = (() => {
     const header = rows[0], fmt = opts.format || detect(header);
     if (!fmt && !opts.map) return { error: 'unknown', header };
     const h = index(header), conv = fmt && FORMATS[fmt] ? FORMATS[fmt].row : genericRow(opts.map);
-    const seen = {}, out = [], bad = [];
+    const seen = {}, out = [], bad = [], withBal = [];
     rows.slice(1).forEach((r, i) => {
       const t = conv(r, h);
       if (!t.date || t.amount == null || !Number.isFinite(t.amount)) { bad.push(i + 2); return; }
@@ -116,9 +116,18 @@ const TallyTx = (() => {
       if (t.type) tx.type = t.type;
       if (t.detail) tx.detail = t.detail;
       out.push(tx);
+      if (t.balance != null) withBal.push({ date: t.date, amount: tx.amount, balance: t.balance });
     });
     const dates = out.map(t => t.date).sort();
-    return { format: fmt, formatName: fmt ? FORMATS[fmt].name : 'Your columns', header, txns: out, badRows: bad, from: dates[0] || null, to: dates.at(-1) || null };
+    // Statements with a running balance (Lloyds) say exactly what the account held: after the newest row, and
+    // before the oldest one (its balance less its own amount) - dated the day before, so that day's rows count after it.
+    let balances = null;
+    if (withBal.length) {
+      const newestFirst = withBal[0].date >= withBal.at(-1).date, newest = newestFirst ? withBal[0] : withBal.at(-1), oldest = newestFirst ? withBal.at(-1) : withBal[0];
+      const before = new Date(Date.parse(oldest.date + 'T00:00:00Z') - 864e5).toISOString().slice(0, 10);
+      balances = { opening: { date: before, balance: Math.round((oldest.balance - oldest.amount) * 100) / 100 }, closing: { date: newest.date, balance: newest.balance } };
+    }
+    return { format: fmt, formatName: fmt ? FORMATS[fmt].name : 'Your columns', header, txns: out, badRows: bad, from: dates[0] || null, to: dates.at(-1) || null, balances };
   }
   // Which of these are new?
   function fresh(existing, incoming) {

@@ -328,7 +328,10 @@ try {
   ok((await page.textContent('#main')).includes('Uncategorised'), 'after importing, it goes straight to sorting out what’s uncategorised');
   await page.setInputFiles('#csvIn', path.join(root, 'tests/fixtures/amex-sample.csv'));
   await page.waitForSelector('.sheet-wrap.open #f_account');
+  ok(await page.evaluate(() => data.snapshots.some(s => s.date === '2026-06-30' && s.balances.cur === -134.28) && data.snapshots.some(s => s.date === '2026-09-28' && s.balances.cur === 4210.5)), 'the Lloyds statement’s opening and closing balances are recorded for the account');
   ok(await page.$eval('.sheet-wrap.open #f_account', el => el.value) === 'amex', 'the card is suggested for an Amex file');
+  // the account picker: full width, with owner and type, so a long name or two of the same name can be told apart
+  ok(await page.$eval('.sheet-wrap.open #f_account', el => { const r = el.getBoundingClientRect(), f = el.closest('.field').getBoundingClientRect(), t = el.options[el.selectedIndex].text; return el.closest('.field').classList.contains('stack') && r.width > f.width * 0.85 && t === 'Test Amex · Me · ' + TYPE_LABEL.card && getComputedStyle(el).direction === 'ltr'; }), 'the import picker shows the whole name, whose it is and the type, full width');
   await page.click('.sheet-wrap.open .done');
   await page.waitForFunction(() => data.transactions.length === 32);
   ok(await page.evaluate(() => { const C = TallyTx.categorised(data); return C.filter(t => t.cat === 'Transfer').length === 2; }), 'paying the card from the current account is matched as a transfer');
@@ -402,12 +405,81 @@ try {
   ok(await page.evaluate(() => data.snapshots.find(s => s.date === '2026-12-01').contrib.isa === 1000), 'what was paid in is saved with the update');
   await page.evaluate(() => actions.push('snap:2026-12-01'));
   await page.waitForFunction(() => document.querySelector('#main').textContent.includes('Where the change came from'));
-  ok(await page.evaluate(() => { const X = TallyAnalysis.attribution(data, '2026-09-01', '2026-12-01'); return Math.abs(X.growth - (101000 - 98765 - 1000)) < 0.01 && document.querySelector('#main').textContent.includes(money(X.growth, { sign: true })); }), 'growth shown after taking off what was paid in');
+  ok(await page.evaluate(() => Math.abs(TallyAnalysis.attribution(data, '2026-09-01', '2026-12-01').growth - (101000 - 98765 - 1000)) < 0.01), 'growth from 1 Sep: the change less what was paid in');
+  // the page compares with the update just before - the statement balance on 28 Sep - with the S&S ISA on a straight line in between
+  ok(await page.evaluate(() => { const prev = snapsSorted().filter(s => s.date < '2026-12-01').at(-1).date, X = TallyAnalysis.attribution(data, prev, '2026-12-01'); return prev === '2026-09-28' && document.querySelector('#main').textContent.includes(money(X.growth, { sign: true })); }), 'the page shows growth since the update just before');
   await page.evaluate(() => { data.snapshots = data.snapshots.filter(x => x.date !== '2026-12-01'); ui.stacks[ui.tab] = []; changed(); });
   // reminder file
   const [dl] = await Promise.all([page.waitForEvent('download'), page.evaluate(() => downloadReminder())]);
   const ics = fs.readFileSync(await dl.path(), 'utf8');
   ok(dl.suggestedFilename() === 'tally-balance-reminder.ics' && ics.includes('RRULE:FREQ=MONTHLY;BYMONTHDAY=1') && ics.includes('\r\n'), 'monthly reminder calendar file');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
+  console.log('Balances per account');
+  await page.evaluate(() => { data.accounts.push({ id: 'sav', name: 'Test Saver', owner: 'M', type: 'savings', rate: 4, active: true, access: 'instant' }); data.snapshots.push({ date: '2026-09-01', balances: { sav: 10000 } }); data.snapshots.sort((a, b) => a.date.localeCompare(b.date)); const s = data.snapshots.filter(x => x.date === '2026-09-01'); if (s.length > 1) { Object.assign(s[0].balances, s[1].balances); data.snapshots = data.snapshots.filter(x => x !== s[1]); } changed(); });
+  await page.click('#tabbar [data-arg="accounts"]'); await page.click('#tabbar [data-arg="accounts"]');
+  ok((await page.textContent('#main')).includes('est. at its rate'), 'a saver not updated since September is worked out at its rate');
+  await page.evaluate(() => actions.push('acct:sav'));
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('worked out from its interest rate'));
+  await page.waitForTimeout(400); await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-saver.png'), fullPage: true });
+  ok(await page.evaluate(() => { const b = balanceOn(data, 'sav', todayISO()); return b.how === 'interest' && document.querySelector('#main .hero').textContent.includes(money(b.v)); }), 'the saver’s page shows today’s balance worked out from its rate');
+  await page.click('#main [data-act="add-mtx"]');
+  await page.waitForSelector('.sheet-wrap.open #f_kind');
+  await page.fill('.sheet-wrap.open #f_date', '2026-09-15'); await page.fill('.sheet-wrap.open #f_amount', '500');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.transactions.some(t => t.account === 'sav' && t.source === 'manual'));
+  ok(await page.evaluate(() => { const t = data.transactions.find(x => x.account === 'sav' && x.source === 'manual'); return t.amount === 500 && t.kind === 'in' && t.category === 'Transfer'; }), 'money paid in, entered by hand');
+  // a balance for the S&S ISA on its own
+  await page.evaluate(() => actions.push('acct:isa'));
+  await page.click('#main [data-act="add-bal"]');
+  await page.waitForSelector('.sheet-wrap.open #f_bal');
+  await page.fill('.sheet-wrap.open #f_date', '2026-11-20'); await page.fill('.sheet-wrap.open #f_bal', '104000');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.snapshots.some(s => s.date === '2026-11-20'));
+  ok(await page.evaluate(() => { const sn = data.snapshots.find(s => s.date === '2026-11-20'); return Object.keys(sn.balances).join() === 'isa' && sn.balances.isa === 104000; }), 'a balance for one account, without touching the others');
+  ok(await page.evaluate(() => { const p = latestSnapshot(data); return p.date === '2026-11-20' && p.balances.isa === 104000 && p.how.cur === 'transactions' && p.how.sav === 'interest'; }), 'everything else is worked out for that date, and the projection starts there');
+  // the checks
+  await page.evaluate(() => actions.push('checks'));
+  await page.waitForFunction(() => document.querySelector('#main').textContent.includes('To look at'));
+  const ck = await page.evaluate(() => TallyAnalysis.checks(data).find(c => c.account === 'isa' && c.to === '2026-11-20'));
+  ok(ck && ck.kind === 'return' && ck.open, 'the S&S move is listed with its return to cross-check');
+  await page.waitForTimeout(400); await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-checks.png'), fullPage: true });
+  await page.evaluate(k => actions.review(k), ck.key);
+  await page.waitForSelector('.sheet-wrap.open #f_checked');
+  await page.click('.sheet-wrap.open #f_checked'); await page.fill('.sheet-wrap.open #f_note', 'matches the statement');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(k => data.reviews[k], ck.key);
+  ok(await page.evaluate(k => !TallyAnalysis.checks(data).find(c => c.key === k).open && data.reviews[k].note === 'matches the statement', ck.key), 'cross-checked, with a note, and no longer asked');
+  // the update sheet leaves savings blank to be worked out
+  await page.evaluate(() => actions.update());
+  await page.waitForSelector('.sheet-wrap.open #b_sav');
+  ok(await page.$eval('.sheet-wrap.open #b_sav', el => el.value === '' && el.placeholder.startsWith('about')), 'savings are left blank on a full update, showing the estimate');
+  await page.click('.sheet-wrap.open .cancel'); await page.waitForTimeout(400);
+  await page.evaluate(() => { data.snapshots = data.snapshots.filter(s => s.date !== '2026-11-20'); changed(); });
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
+  console.log('Account names and interest rates over time');
+  await page.evaluate(() => { data.accounts.push({ id: 'sav2', name: 'Test Saver', owner: 'C', type: 'savings', rate: 2, active: true, access: 'instant' }); changed(); });
+  ok(await page.evaluate(() => accName('sav') === 'Test Saver (Me)' && accName('sav2') === 'Test Saver (Partner)' && accName('cur') === acc('cur').name), 'two accounts with the same name show whose each is; a unique name is left alone');
+  await page.evaluate(() => { data.accounts = data.accounts.filter(a => a.id !== 'sav2'); changed(); });
+  const before = await page.evaluate(() => [balanceOn(data, 'sav', '2026-10-01').v, balanceOn(data, 'sav', '2027-03-01').v]);
+  await page.evaluate(() => actions.push('acct:sav'));
+  await page.waitForSelector('#main [data-act="add-rate"]');
+  ok((await page.textContent('#main')).includes('In force now'), 'the account page lists its interest rate');
+  await page.click('#main [data-act="add-rate"]');
+  await page.waitForSelector('.sheet-wrap.open #f_rate');
+  await page.fill('.sheet-wrap.open #f_from', '2027-01-01'); await page.fill('.sheet-wrap.open #f_rate', '5');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => acc('sav').rates.length === 2);
+  const after = await page.evaluate(() => [balanceOn(data, 'sav', '2026-10-01').v, balanceOn(data, 'sav', '2027-03-01').v, rateOn(acc('sav'), '2026-12-31'), rateOn(acc('sav'), '2027-01-01'), acc('sav').rate]);
+  ok(after[0] === before[0], 'a rate from January leaves October’s balance exactly as it was');
+  ok(after[1] > before[1] && after[2] === 4 && after[3] === 5, 'and March grows at 5% from January, 4% before');
+  ok(after[4] === 4, 'the rate shown today stays the one in force today');
+  await page.click('#main [data-act="edit-rate"][data-arg="sav|2027-01-01"]');
+  await page.waitForSelector('.sheet-wrap.open #f_rate');
+  await page.click('.sheet-wrap.open [data-sact="delete"]');
+  await page.waitForFunction(() => acc('sav').rates.length === 1);
+  ok(await page.evaluate(b => balanceOn(data, 'sav', '2027-03-01').v === b, before[1]), 'removing the change puts every period back');
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
   console.log('Newer files');

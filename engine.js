@@ -77,9 +77,57 @@ function amortise(o, bal, months, shift = 0) {
   return { payment: first, interest, overpaid, balance: b, months: out, fees: +o.fee || 0, upfront: (+o.lump || 0) + (o.feeAdded ? 0 : +o.fee || 0) };
 }
 
+// ---------- balances between known dates (Sep 2026) ----------
+// A balance update (snapshot) may hold any subset of accounts: each account has its OWN dated balances.
+// balanceOn() works out an account's balance on any date from them:
+//   observed     - a balance was entered for that date
+//   interest     - savings and cash ISAs: the last balance grown at the account's rate, plus money in and out since
+//   transactions - current accounts and cards with transactions: the last balance plus every transaction since
+//                  (or, before the first balance, the next balance less the transactions in between)
+//   straight     - anything else between two balances: a straight line
+//   carried      - after the last balance, with nothing to go on (S&S ISAs, pensions, debts): held at it
+// A closed account (active === false) is not carried beyond its last balance.
+const INTEREST_TYPES = new Set(['savings', 'cash_isa']), TXN_TYPES = new Set(['current', 'card']);
+const dayNum = d => Date.parse(String(d).slice(0, 10) + 'T00:00:00Z') / 864e5;
+function observations(data, id) {
+  return data.snapshots.filter(s => s.balances[id] != null && s.balances[id] !== '').map(s => ({ date: s.date, v: +s.balances[id] })).sort((a, b) => a.date.localeCompare(b.date));
+}
+const txnsOf = (data, id) => (data.transactions || []).filter(t => t.account === id);
+function balanceOn(data, id, date) {
+  const a = data.accounts.find(x => x.id === id); if (!a) return null;
+  const obs = observations(data, id); if (!obs.length) return null;
+  const hit = obs.find(o => o.date === date); if (hit) return { v: hit.v, how: 'observed', from: date };
+  const prev = obs.filter(o => o.date < date).at(-1), next = obs.find(o => o.date > date);
+  const tx = txnsOf(data, id);
+  const between = (d1, d2) => tx.filter(t => t.date > d1 && t.date <= d2);
+  if (!prev) {
+    // before the first balance: only transactions can say what it was
+    if (TXN_TYPES.has(a.type) && tx.some(t => t.date <= next.date && t.date > date)) return { v: next.v - between(date, next.date).reduce((s, t) => s + t.amount, 0), how: 'transactions', from: next.date };
+    return null;
+  }
+  if (!next && a.active === false) return null;
+  if (INTEREST_TYPES.has(a.type)) {
+    const grow = (v, d1) => v * EM.growthFactor(a, d1, date); // at whatever rate was in force on each day
+    const v = grow(prev.v, prev.date) + between(prev.date, date).filter(t => t.kind !== 'interest').reduce((s, t) => s + grow(t.amount, t.date), 0);
+    return { v, how: 'interest', from: prev.date };
+  }
+  if (TXN_TYPES.has(a.type) && tx.length) return { v: prev.v + between(prev.date, date).reduce((s, t) => s + t.amount, 0), how: 'transactions', from: prev.date };
+  if (next) { const f = (dayNum(date) - dayNum(prev.date)) / (dayNum(next.date) - dayNum(prev.date)); return { v: prev.v + (next.v - prev.v) * f, how: 'straight', from: prev.date }; }
+  return { v: prev.v, how: 'carried', from: prev.date };
+}
+// Every account's balance on a date, in the snapshot shape the rest of the engine reads. `how` says,
+// per account, whether it was entered or worked out.
+function positionOn(data, date) {
+  const balances = {}, how = {};
+  for (const a of data.accounts) { const b = balanceOn(data, a.id, date); if (b) { balances[a.id] = Math.round(b.v * 100) / 100; how[a.id] = b.how; } }
+  return { date, balances, how };
+}
+const latestDate = data => data.snapshots.reduce((m, s) => (s.date > m ? s.date : m), '');
+// Where the projection starts: every account as it stands on the most recent date any balance was entered.
+// With a full update on that date this is exactly that update.
 function latestSnapshot(data) {
-  const s = [...data.snapshots].sort((a, b) => a.date.localeCompare(b.date));
-  return s[s.length - 1] || null;
+  const d = latestDate(data);
+  return d ? positionOn(data, d) : null;
 }
 
 function snapshotTotals(data, snap) {
@@ -127,18 +175,19 @@ function project(data, scenarioKey, months, opts = {}) {
   const other = {};           // accountId -> balance (savings, pensions, 0% cards, tax)
   const heldIsa = {};         // cash ISAs on a fixed term or notice: not drawn on, grow at their own rate
   const byId = Object.fromEntries(accs.map(a => [a.id, a]));
-  let cashIsaRateW = 0;
+  const cashIsaW = []; // instant cash ISAs and their opening balances: the pool's rate each month is their weighted rate then
   for (const a of accs) {
     const v = snap.balances[a.id]; if (v == null) continue;
     const g = GROUPS[a.type] || GROUPS.savings;
     if (g.pool === 'cash') cash += v;
     else if (a.type === 'ss_isa') isaSS += v;
     else if (a.type === 'cash_isa' && (a.access === 'fixed' || a.access === 'notice')) heldIsa[a.id] = v;
-    else if (a.type === 'cash_isa') { isaCash += v; cashIsaRateW += v * (+a.rate || 0); }
+    else if (a.type === 'cash_isa') { isaCash += v; cashIsaW.push([a, v]); }
     else other[a.id] = v;
   }
   const matK = a => a.access === 'fixed' && a.maturity ? EM.monthKey(a.maturity) : null;
-  const cashIsaRate = isaCash ? cashIsaRateW / isaCash : 3;
+  const cashIsaRateAt = date => { const w = cashIsaW.reduce((s, [, v]) => s + v, 0); return w ? cashIsaW.reduce((s, [a, v]) => s + v * EM.rateOn(a, date), 0) / w : 3; };
+  const cashIsaRate = cashIsaRateAt(snap.date);
   const ssShare = Math.min(100, Math.max(0, +r.sweepToSS || 0)) / 100;
 
   // Each part runs on its own: its own balance, rate, and a payment recalculated when its fix ends.
@@ -301,11 +350,11 @@ function project(data, scenarioKey, months, opts = {}) {
     if (opts.ssReturns) { const g = isaSS * opts.ssReturns[i]; isaSS += g; growth += g; }
     if (sc.growth) {
       const gSS = opts.ssReturns ? 0 : isaSS * (sc.ssReturn || 0) / 100 / 12;
-      const gC = isaCash * cashIsaRate / 100 / 12;
+      const gC = isaCash * cashIsaRateAt(date) / 100 / 12;
       isaSS += gSS; isaCash += gC; growth += gSS + gC;
-      for (const id in heldIsa) { const g = heldIsa[id] * (+byId[id].rate || 0) / 100 / 12; heldIsa[id] += g; growth += g; }
+      for (const id in heldIsa) { const g = heldIsa[id] * EM.rateOn(byId[id], date) / 100 / 12; heldIsa[id] += g; growth += g; }
       for (const a of accs) if (other[a.id] != null && (a.type === 'savings' || a.type === 'pension')) {
-        const g = other[a.id] * (+a.rate || 0) / 100 / 12; other[a.id] += g; growth += g;
+        const g = other[a.id] * EM.rateOn(a, date) / 100 / 12; other[a.id] += g; growth += g;
       }
     }
     const otherTotal = Object.values(other).reduce((s, v) => s + v, 0);
@@ -383,9 +432,9 @@ function drift(data, sk, date) {
   const prev = snaps[i - 1], cur = snaps[i];
   const k1 = ymKey(ym(prev.date).y, ym(prev.date).m), k2 = ymKey(ym(cur.date).y, ym(cur.date).m);
   if (k2 <= k1) return null; // same month: nothing projected in between
-  const pr = project({ ...data, snapshots: snaps.slice(0, i) }, sk, k2 - k1);
+  const pr = project({ ...data, snapshots: snaps.slice(0, i), transactions: (data.transactions || []).filter(t => t.date <= prev.date) }, sk, k2 - k1);
   const r = pr.rows.find(x => x.k === k2 - 1);
-  const act = snapshotTotals(data, cur);
+  const act = snapshotTotals(data, positionOn(data, cur.date));
   const exp = { cash: r.closing, isa: r.isa, other: r.other, net: r.net };
   const actual = { cash: act.cash, isa: act.isa, other: act.other, net: act.net };
   const diff = Object.fromEntries(Object.keys(exp).map(k => [k, actual[k] - exp[k]]));
@@ -434,4 +483,4 @@ function availableSeries(rows, floor, em = 12) {
   return rows.map((r, i) => r.byAccess.instant + r.byAccess.notice - floor - rows.slice(i + 1, i + 1 + em).reduce((s, x) => s + x.earmark, 0));
 }
 
-if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };
+if (typeof module !== 'undefined') module.exports = { project, snapshotTotals, latestSnapshot, balanceOn, positionOn, observations, latestDate, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };

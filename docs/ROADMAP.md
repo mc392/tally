@@ -227,6 +227,11 @@ The period up to the remortgage decision needs the most accuracy.
 
 ---
 
+## Added 28 Sep 2026: balances per account
+> **Status: done.** Asked for by Matt after Phase 4. Each account has its own dated balances; in between, savings follow their interest rate plus money recorded in or out, current accounts and cards follow their transactions, everything else a straight line. A balance can be added for one account on its own, and savings can be left to roll forward. Checks flag any move between balances that transactions or interest don't explain, and ask for S&S returns to be cross-checked. Money in and out can be entered by hand. Lloyds imports record the statement's own balances.
+>
+> **Also done:** interest rates are kept by date - a new rate applies from its date, and every earlier period keeps the rate it had. Account pickers show the full name, whose it is and the type; accounts with the same name show the owner everywhere.
+
 ## Phase 2: Transactions and spend analysis
 
 ### 2.1 CSV import
