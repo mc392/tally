@@ -80,6 +80,7 @@ input,select{font:inherit; letter-spacing:inherit; color:inherit}
 .pill{font-size:13px; font-weight:600; padding:5px 10px; border-radius:14px; background:var(--fill); color:var(--label2); white-space:nowrap}
 .pill.warn{background:rgba(255,149,0,.16); color:var(--orange)}
 .pill.ok{color:var(--green); background:rgba(52,199,89,.14)}
+.pill.bad{color:var(--red); background:rgba(255,59,48,.12)}
 
 .page{max-width:640px; margin:0 auto; padding:0 16px 120px}
 .page.push-in{animation:pushIn .32s cubic-bezier(.2,.8,.2,1)}
@@ -250,6 +251,7 @@ textarea{width:100%; min-height:160px; border-radius:12px; border:0; padding:12p
 <input type="file" id="fileIn" accept="application/json,.json,.tally" hidden>
 <input type="file" id="csvIn" accept=".csv,text/csv" hidden>
 <script src="model.js"></script>
+<script src="curves.js"></script>
 <script src="engine.js"></script>
 <script src="templates.js"></script>
 <script src="transactions.js"></script>

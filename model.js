@@ -63,8 +63,18 @@
 //              `from: null` is the rate before any dated change. A change applies from its date on and never
 //              touches the periods before it. accounts[].rate is kept equal to the rate in force today, for display.
 //              rateOn() and growthFactor() are the only readers.
+//
+// Version 11 (Sep 2026): market rates (curves.js, docs/YIELD_CURVES.md)
+//   accounts[].rateModel, mortgage.parts[].rateModel - optional: {kind:'variable'|'tracker'|'fixed', passThrough,
+//              lagMonths, floor, spread, rollover:{kind:'refix'|'variable'|'manual'|'close', termMonths, margin, manualRate}}.
+//              With one, the projection follows the scenario's rate path; without, the item keeps its own entered
+//              rates exactly as before. The current rate is still the account's `rates` (or the part's `rate`), a
+//              fixed account's fix end its `maturity` (the part's `fixEnd`), and a part's rate after the fix `newRate`.
+//   scenarios[k].rates - {kind:'market'|'shift'|'twist'|'flat'|'anchor'|'manual'|'history', ...its settings}.
+//   rateBasis - {source, asOf, curve, previous?}: the Bank of England curve this file's projections use, kept in the
+//              file so any projection can be re-run offline and "as at" the curve it was made with. Public data.
 const TallyModel = (() => {
-  const VERSION = 10;
+  const VERSION = 11;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -140,7 +150,8 @@ const TallyModel = (() => {
     d.goals ||= [];
     d.reviews ||= {};
     d.transactions ||= []; d.imports ||= []; d.categoryRules ||= []; d.categoryMap ||= {};
-    for (const k in d.scenarios || {}) { const sc = d.scenarios[k]; sc.option ??= null; sc.bundles ||= {}; sc.rateShift ??= 0; }
+    for (const k in d.scenarios || {}) { const sc = d.scenarios[k]; sc.option ??= null; sc.bundles ||= {}; sc.rateShift ??= 0; sc.rates ||= { kind: 'market' }; }
+    d.rateBasis ??= null;
     for (const b of d.bundles) { b.on ??= true; b.scale ??= 1; b.contingency ??= 0; }
     for (const f of d.flows) { f.start ??= null; f.end ??= null; f.bundle ??= null; f.on ??= true; f.inflates ??= false; f.growth ??= 0; }
     (d.accounts || []).forEach(defaultAccess);

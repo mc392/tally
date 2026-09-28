@@ -1,0 +1,31 @@
+# Fetches the Bank of England's sterling OIS yield curve each weekday and commits it to rates/, where the app
+# loads it from its own site (the browser cannot fetch the Bank's zipped spreadsheets itself).
+# Public market data only. A curve that fails the checks is not written and the run shows red; the last good
+# curve stays in place. Run it by hand from the Actions tab ("Run workflow") at any time.
+name: Market rates
+on:
+  schedule:
+    - cron: '17 13 * * 1-5'   # 13:17 UTC on weekdays, after the Bank publishes (usually by noon)
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: rates
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check the pipeline
+        run: node tests/curves.test.js && node tests/pipeline.test.mjs
+      - name: Fetch the curve
+        run: node scripts/fetch-curves.mjs
+      - name: Commit if it changed
+        run: |
+          git add rates
+          if git diff --cached --quiet; then echo "No new curve."; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Market rates: curve as at $(node -p "require('./rates/curve-latest.json').asOf")"
+          git push
