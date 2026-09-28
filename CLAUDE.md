@@ -44,9 +44,5 @@ A mortgage is a list of **parts** (UK sub-accounts: e.g. the original loan plus 
 ## Projection rules (from the original spreadsheet)
 Monthly: cash + surplus + one-off items. Above the cash floor → sweep into ISAs up to (new allowance + flexible re-deposit room). Below → withdraw from ISAs (cash ISAs first); withdrawals add re-deposit room for the rest of that tax year. Allowance resets each April. Growth optional per scenario.
 
-## Roadmap (agreed next steps)
-1. **Live save to iCloud Drive on iPhone** (agreed Sep 2026, replaces the earlier OneDrive/Graph plan). Phase 1 (done): `storage.js`, encryption, writer mark. Phase 2: a Capacitor iOS shell that loads this site from GitHub Pages (`server.url`, app-bound domains so the service worker works) plus one small Swift plugin - pick a folder once (security-scoped bookmark), read, write - exposed as a `native` route in `storage.js`. Built and signed ad hoc on GitHub Actions' macOS runners (no Mac, no TestFlight, no App Store Connect). Phase 3: Face ID for the passphrase via the Keychain; a bundled copy for offline starts. Pattern to copy: therapy-tracker's `GroundWorkRecordsFolder.swift`.
-2. **Trading 212 balances** via its official API. Needs a tiny proxy (e.g. Cloudflare Worker) so the API key isn't in the web page and to get around browser CORS limits. It will also need that proxy's one address added to `connect-src` in the CSP - add exactly that, never a wildcard.
-3. Per-person ISA allowances (£20k each) instead of a household figure.
-4. Pensions and property as optional net-worth lines.
-5. CSV import of past balances.
+## Roadmap
+**`docs/ROADMAP.md` is the build plan** - phases 0 to 5, each feature with a "done when" list that doubles as its tests. Its *Decisions* section (28 Sep 2026) overrides the text below it: life events before readiness in Phase 1, remortgage against the earliest part's fix end, ISA top-ups fill one person first, OneDrive dropped in favour of the iCloud iPhone app, and everything web-only is built before the Apple setup. Mark items done in that file as they land.
