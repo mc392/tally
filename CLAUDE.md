@@ -4,7 +4,7 @@
 Matt is new to software engineering but works in accounting/finance risk: explain every step plainly, don't skip steps, but technical detail is welcome. Explain any terminal command before asking him to run it.
 
 ## Principles
-- **Never commit real financial data.** Data lives in the user's `family-finances.json` in iCloud Drive / OneDrive. Tests use synthetic fixtures only.
+- **The repository is PUBLIC (Sep 2026). Never commit real financial data** - not in tests, fixtures, screenshots, docs or commit messages. Data lives in the user's `family-finances.json` in iCloud Drive / OneDrive, which `.gitignore` blocks. Tests use made-up households with round numbers; a check that genuinely needs real figures goes in `tests/private/`, which is gitignored and never leaves the user's machine. Real figures were once in `tests/engine.test.js` and were removed by rewriting history - don't reintroduce anything shaped like them.
 - No build step, no framework: plain HTML/CSS/JS served by GitHub Pages. Keep it that way unless there's a strong reason.
 - iOS-native look: system font, inset grouped lists, large titles, bottom tab bar, bottom sheets. Main screen stays simple; detail lives one tap deeper.
 - `engine.js` is pure maths with no DOM access. Any change to projection logic must keep `node tests/engine.test.js` passing, or update the test with a written reason.
@@ -19,7 +19,8 @@ All reading and writing of the finance file goes through `storage.js`; `app.js` 
 - `edits` counts changes so one made while a save is in flight is not marked saved.
 
 ## Tests
-- `node tests/engine.test.js` - projection maths against the spreadsheet.
+- `node tests/engine.test.js` - projection maths against the spreadsheet's rules, on a made-up household; every figure worked out by hand, month by month (allowance, floor, withdrawal, re-deposit room, April reset).
+- `node tests/mortgage.test.js` - mortgage parts, also worked by hand.
 - `node tests/storage.test.js` - encryption round trip, wrong passphrase, tampering, IV reuse, conflict rules.
 - `node tests/browser.test.mjs` - the real app in headless Chromium (needs `npm i --no-save playwright`): live save, picking up another device's save, refusing to overwrite it, encryption on, reopening, unlocking on a new device, no CSP violations. Uses a fake file handle, never a real file.
 - `sw.js`'s `CACHE` must be bumped when a shell file is added or renamed.
