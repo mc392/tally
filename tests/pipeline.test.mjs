@@ -63,12 +63,14 @@ assert.strictEqual(c.shortEnd.forward.length, 60);
 assert.ok(Math.abs(c.shortEnd.forward[11] - f(1, 2)) < 1e-12, '12-month forward on the latest day');
 assert.deepStrictEqual(c.long.tenorsYears, [6, 7, 8, 9, 10, 15, 20], 'long tenors beyond 5 years; 25 years is blank on the spot sheet that day, so left out');
 assert.ok(Math.abs(c.long.forward[4] - f(10, 2)) < 1e-12);
-// The first real run (28 Sep 2026) read every short-end point as missing: the maturities there are not "1 … 60 months".
-// Whatever the label says, maturities that stop at 5 are years; ones running to 60 are months.
-for (const [label, mats] of [['months:', months.map(m => m / 12)], ['years:', months.map(m => m / 12)], ['', months.map(m => m / 12)], ['Maturity (months)', months]]) {
-  const S = { ...sheets, '1. fwds, short end': sheetOf(label, mats, m => (mats === months ? m / 12 : m)), '3. spot, short end': sheetOf(label, mats, m => (mats === months ? m / 12 : m)) };
+// The first real run (28 Sep 2026) read every short-end point as missing: the Bank's workbook labels them "months:" but
+// stores 1.00000004, 2.00000008 … 60.0000024, not whole numbers, and they were matched exactly. They are rounded now;
+// and whatever the label says, maturities that stop at 5 are years, ones running to 60 are months.
+const bankMonths = months.map(m => m * 1.00000004);
+for (const [label, mats] of [['months:', bankMonths], ['months:', months.map(m => m / 12)], ['years:', months.map(m => m / 12)], ['', months.map(m => m / 12)], ['Maturity (months)', months]]) {
+  const S = { ...sheets, '1. fwds, short end': sheetOf(label, mats, m => (mats === months || mats === bankMonths ? m / 12 : m)), '3. spot, short end': sheetOf(label, mats, m => (mats === months || mats === bankMonths ? m / 12 : m)) };
   const v = oisCurve(S);
-  assert.ok(v.shortEnd.forward.every(x => x != null) && Math.abs(v.shortEnd.forward[11] - f(1, 2)) < 1e-12, `short end headed "${label}" ${mats === months ? 'in months' : 'in years'}`);
+  assert.ok(v.shortEnd.forward.every(x => x != null) && Math.abs(v.shortEnd.forward[11] - f(1, 2)) < 1e-12, `short end headed "${label}" ${mats === bankMonths ? 'in the Bank’s not-quite-whole months' : mats === months ? 'in months' : 'in years'}`);
 }
 assert.ok(c.layout.length === 4 && /read as months, 60 maturities/.test(c.layout[0]), 'the layout it read is described, for the run log');
 console.log('  ✓ the four OIS sheets become the curve file: 60 monthly points, then the long tenors, whether the short end is headed in months or years');
