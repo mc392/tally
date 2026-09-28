@@ -330,6 +330,8 @@ try {
   await page.waitForSelector('.sheet-wrap.open #f_account');
   ok(await page.evaluate(() => data.snapshots.some(s => s.date === '2026-06-30' && s.balances.cur === -134.28) && data.snapshots.some(s => s.date === '2026-09-28' && s.balances.cur === 4210.5)), 'the Lloyds statement’s opening and closing balances are recorded for the account');
   ok(await page.$eval('.sheet-wrap.open #f_account', el => el.value) === 'amex', 'the card is suggested for an Amex file');
+  // the account picker: full width, with owner and type, so a long name or two of the same name can be told apart
+  ok(await page.$eval('.sheet-wrap.open #f_account', el => { const r = el.getBoundingClientRect(), f = el.closest('.field').getBoundingClientRect(), t = el.options[el.selectedIndex].text; return el.closest('.field').classList.contains('stack') && r.width > f.width * 0.85 && t === 'Test Amex · Me · ' + TYPE_LABEL.card && getComputedStyle(el).direction === 'ltr'; }), 'the import picker shows the whole name, whose it is and the type, full width');
   await page.click('.sheet-wrap.open .done');
   await page.waitForFunction(() => data.transactions.length === 32);
   ok(await page.evaluate(() => { const C = TallyTx.categorised(data); return C.filter(t => t.cat === 'Transfer').length === 2; }), 'paying the card from the current account is matched as a transfer');
@@ -454,6 +456,30 @@ try {
   ok(await page.$eval('.sheet-wrap.open #b_sav', el => el.value === '' && el.placeholder.startsWith('about')), 'savings are left blank on a full update, showing the estimate');
   await page.click('.sheet-wrap.open .cancel'); await page.waitForTimeout(400);
   await page.evaluate(() => { data.snapshots = data.snapshots.filter(s => s.date !== '2026-11-20'); changed(); });
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
+  console.log('Account names and interest rates over time');
+  await page.evaluate(() => { data.accounts.push({ id: 'sav2', name: 'Test Saver', owner: 'C', type: 'savings', rate: 2, active: true, access: 'instant' }); changed(); });
+  ok(await page.evaluate(() => accName('sav') === 'Test Saver (Me)' && accName('sav2') === 'Test Saver (Partner)' && accName('cur') === acc('cur').name), 'two accounts with the same name show whose each is; a unique name is left alone');
+  await page.evaluate(() => { data.accounts = data.accounts.filter(a => a.id !== 'sav2'); changed(); });
+  const before = await page.evaluate(() => [balanceOn(data, 'sav', '2026-10-01').v, balanceOn(data, 'sav', '2027-03-01').v]);
+  await page.evaluate(() => actions.push('acct:sav'));
+  await page.waitForSelector('#main [data-act="add-rate"]');
+  ok((await page.textContent('#main')).includes('In force now'), 'the account page lists its interest rate');
+  await page.click('#main [data-act="add-rate"]');
+  await page.waitForSelector('.sheet-wrap.open #f_rate');
+  await page.fill('.sheet-wrap.open #f_from', '2027-01-01'); await page.fill('.sheet-wrap.open #f_rate', '5');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => acc('sav').rates.length === 2);
+  const after = await page.evaluate(() => [balanceOn(data, 'sav', '2026-10-01').v, balanceOn(data, 'sav', '2027-03-01').v, rateOn(acc('sav'), '2026-12-31'), rateOn(acc('sav'), '2027-01-01'), acc('sav').rate]);
+  ok(after[0] === before[0], 'a rate from January leaves October’s balance exactly as it was');
+  ok(after[1] > before[1] && after[2] === 4 && after[3] === 5, 'and March grows at 5% from January, 4% before');
+  ok(after[4] === 4, 'the rate shown today stays the one in force today');
+  await page.click('#main [data-act="edit-rate"][data-arg="sav|2027-01-01"]');
+  await page.waitForSelector('.sheet-wrap.open #f_rate');
+  await page.click('.sheet-wrap.open [data-sact="delete"]');
+  await page.waitForFunction(() => acc('sav').rates.length === 1);
+  ok(await page.evaluate(b => balanceOn(data, 'sav', '2027-03-01').v === b, before[1]), 'removing the change puts every period back');
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
   console.log('Newer files');

@@ -78,6 +78,11 @@ const CHECK = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke
 
 const person = id => (data.people.find(p => p.id === id) || { name: id }).name;
 const acc = id => data.accounts.find(a => a.id === id);
+// Two accounts can share a name ("Easy Saver" each): say whose it is whenever the name alone is ambiguous.
+const sameName = a => data.accounts.some(x => x !== a && x.name.trim().toLowerCase() === a.name.trim().toLowerCase());
+const accLabel = a => (a ? (sameName(a) ? `${a.name} (${person(a.owner)})` : a.name) : 'Unknown account');
+// In a list of choices, always the full picture: name, whose, what kind
+const accOption = a => [a.id, `${a.name} · ${person(a.owner)} · ${TYPE_LABEL[a.type]}`];
 const snapsSorted = () => [...data.snapshots].sort((a, b) => a.date.localeCompare(b.date));
 // Balances are per account: an update can hold one account or all of them, and the rest is worked out
 // (balanceOn / positionOn in engine.js). HOW says how a figure was arrived at, in words.
@@ -525,7 +530,7 @@ function vPool(key) {
 
 function accRow(a, snap) {
   const v = snap?.balances[a.id]; const pv = snap ? prevValue(a.id, snap.date) : null, how = snap?.how?.[a.id];
-  return row({ title: esc(a.name) + (a.active ? '' : '<span class="tag">Closed</span>'), sub: `${TYPE_LABEL[a.type]}${a.rate ? ` · ${a.rate}%` : ''}${how && HOW_SHORT[how] ? ` · ${HOW_SHORT[how]}` : ''}`, value: v == null ? '–' : amt(v, { color: true }), vsub: v != null && pv != null && Math.abs(v - pv) > .5 ? chg(v - pv) : '', strong: true, act: 'push', arg: 'acct:' + a.id });
+  return row({ title: esc(accLabel(a)) + (a.active ? '' : '<span class="tag">Closed</span>'), sub: `${TYPE_LABEL[a.type]}${!LIAB.has(a.type) && rateOn(a, todayISO()) ? ` · ${rateOn(a, todayISO())}%` : ''}${how && HOW_SHORT[how] ? ` · ${HOW_SHORT[how]}` : ''}`, value: v == null ? '–' : amt(v, { color: true }), vsub: v != null && pv != null && Math.abs(v - pv) > .5 ? chg(v - pv) : '', strong: true, act: 'push', arg: 'acct:' + a.id });
 }
 
 function vAccounts() {
@@ -574,10 +579,10 @@ function vAccount(id) {
       ${pts.length > 1 ? `<section class="card">${chart('c-acc', { series: [{ name: a.name, color: pool.color, pts, fill: true }] })}</section>` : ''}
       ${group(row({ title: 'Add a balance for this account', sub: 'On its own - no need to update the others', act: 'add-bal', arg: id, cls: 'act-row', chev: false }) +
         (liab ? '' : row({ title: 'Record money in or out', sub: a.type === 'ss_isa' || a.type === 'pension' ? 'Contributions, withdrawals, dividends' : 'Deposits, withdrawals, interest paid', act: 'add-mtx', arg: id, cls: 'act-row', chev: false })))}
+      ${liab ? '' : ratesGroup(a)}
       ${cks.length ? group(cks.map(checkRow).join(''), 'Between balances', 'Each gap between two balances entered, and whether what happened in between explains it.') : ''}
       ${manual.length ? group(manual.map(t => row({ title: esc(t.description), sub: fDate(t.date), value: amt(t.amount, { sign: true, color: true, dp: true }), act: 'edit-mtx', arg: t.id })).join(''), 'Money in and out, entered by hand') : ''}
       ${group(
-        row({ title: 'Interest / expected return', value: a.rate ? `${a.rate}% a year` : 'Not set', act: 'edit-account', arg: a.id }) +
         row({ title: 'Counts towards', value: pool.label, act: 'edit-account', arg: a.id }) +
         (imported ? row({ title: 'Imported transactions', value: String(imported), act: 'push', arg: 'txns:acct=' + id }) : '') +
         (a.note ? row({ title: 'Note', sub: esc(a.note), act: 'edit-account', arg: a.id }) : ''), 'Details',
@@ -585,6 +590,39 @@ function vAccount(id) {
       ${rows ? group(rows, 'Balances entered', 'Tap one to change or remove it.') : ''}`,
     after: () => pts.length > 1 && mountChart('c-acc'),
   };
+}
+// ---------- interest rates over time ----------
+// accounts[].rates: [{from: date|null, rate}]. A change applies from its date; the periods before keep theirs.
+const rateOn = (a, d) => TM.rateOn(a, d);
+const rateText = (a, d1, d2) => { if (!a) return '0%'; const r1 = rateOn(a, d1), changes = (a.rates || []).filter(r => r.from && r.from > d1 && r.from <= d2); return changes.length ? `${[r1, ...changes.map(r => r.rate)].join('% then ')}%` : `${r1}%`; };
+function ratesGroup(a) {
+  const t = todayISO(), all = a.rates && a.rates.length ? a.rates : [{ from: null, rate: +a.rate || 0 }];
+  const list = all.slice().sort((x, y) => (y.from || '').localeCompare(x.from || '')); // newest first
+  const current = list.find(r => !r.from || r.from <= t), invest = a.type === 'ss_isa';
+  const title = r => (r.from ? `From ${fDate(r.from)}` : list.length > 1 ? 'Before any change' : 'Since the account was added');
+  const sub = r => (r.from && r.from > t ? 'Still to come' : r === current ? 'In force now' : '');
+  return group(list.map(r => row({ title: title(r), sub: sub(r), value: `${r.rate}%`, act: 'edit-rate', arg: a.id + '|' + (r.from || '') })).join('') +
+    row({ title: 'Change the rate from a date', sub: 'A new rate, or a bonus ending - past or still to come', act: 'add-rate', arg: a.id, cls: 'act-row', chev: false }),
+    invest ? 'Expected return' : 'Interest rate', invest ? 'S&S ISAs use the scenario’s return in the projection; this rate is only a note.' : 'Each rate applies from its date until the next one. Past balances, the checks and the projection all use the rate in force at the time, so changing one period never moves another.');
+}
+function rateSheet(accountId, from) {
+  const a = acc(accountId); a.rates ||= [{ from: null, rate: +a.rate || 0 }];
+  const r = from != null ? a.rates.find(x => (x.from || '') === from) : null, base = r && !r.from;
+  formSheet({
+    title: r ? 'Interest rate' : 'Change the rate', values: { from: r ? r.from : todayISO(), rate: r ? r.rate : rateOn(a, todayISO()) },
+    sections: [{ foot: base ? 'The rate before any dated change.' : 'Applies from this date until the next change. Months before it keep their own rate.', fields: [...(base ? [] : [{ key: 'from', label: 'From', type: 'date' }]), { key: 'rate', label: 'Rate', type: 'percent', unit: '% a year' }] }],
+    extra: r && !base ? destructive('Remove this change', 'delete') : '',
+    onSave: (v, act) => {
+      if (act === 'delete') a.rates = a.rates.filter(x => x !== r);
+      else {
+        if (!base && !v.from) { toast('Choose the date it applies from', true); return false; }
+        if (r) { if (!base && v.from !== r.from && a.rates.some(x => x !== r && x.from === v.from)) { toast('There is already a rate from that date', true); return false; } r.rate = v.rate; if (!base) r.from = v.from; }
+        else { const same = a.rates.find(x => x.from === v.from); if (same) same.rate = v.rate; else a.rates.push({ from: v.from, rate: v.rate }); }
+      }
+      a.rate = rateOn(a, todayISO()); // the figure shown elsewhere is always the rate in force today
+      changed(act === 'delete' ? 'Rate change removed' : `${v.rate}% ${base ? 'before any change' : 'from ' + fDate(v.from)}`);
+    },
+  });
 }
 const TXN_EXPLAIN = {
   savings: 'Between the balances you enter, this account is worked out from its interest rate plus any money in or out you record - so you only need to enter a balance now and then.',
@@ -611,13 +649,13 @@ function vChecks() {
       group(row({ title: 'When to ask', value: `over ${money(data.rules.checks.abs)} or ${data.rules.checks.pct}%`, act: 'edit-checks' })),
   };
 }
-const rowOf = c => ({ title: esc(c.name), sub: `${fDate(c.from)} → ${fDate(c.to)} · ${c.kind === 'return' ? `return ${c.return != null ? (c.return * 100).toFixed(1) + '%' : '–'} to cross-check` : `${money(Math.abs(c.unexplained))} ${c.unexplained > 0 ? 'more' : 'less'} than explained`}`, value: c.review ? '<span class="pill ok">Done</span>' : '<span class="pill warn">Look</span>', act: 'review', arg: c.key });
+const rowOf = c => ({ title: esc(accName(c.account)), sub: `${fDate(c.from)} → ${fDate(c.to)} · ${c.kind === 'return' ? `return ${c.return != null ? (c.return * 100).toFixed(1) + '%' : '–'} to cross-check` : `${money(Math.abs(c.unexplained))} ${c.unexplained > 0 ? 'more' : 'less'} than explained`}`, value: c.review ? '<span class="pill ok">Done</span>' : '<span class="pill warn">Look</span>', act: 'review', arg: c.key });
 function reviewSheet(key) {
   const c = TallyAnalysis.checks(data).find(x => x.key === key); if (!c) return;
   const rv = data.reviews[key];
   if (c.kind === 'return') {
     formSheet({
-      title: c.name, values: { checked: !!rv, note: rv?.note || '' },
+      title: accName(c.account), values: { checked: !!rv, note: rv?.note || '' },
       sections: [{ head: `${fDate(c.from)} → ${fDate(c.to)}`, foot: `${money(c.v1)} → ${money(c.v2)}: a change of ${money(c.change, { sign: true })}, of which ${money(c.paidIn)} was paid in, leaving ${money(c.market, { sign: true })} of market movement - a money-weighted return of ${c.return != null ? (c.return * 100).toFixed(2) + '%' : '–'}${c.annual != null ? ` (${(c.annual * 100).toFixed(1)}% a year)` : ''}. Compare it with the provider’s own statement or app. If it is out, a contribution or withdrawal is probably missing.`,
         fields: [{ key: 'checked', label: 'I’ve cross-checked this return', type: 'toggle' }, { key: 'note', label: 'Note', type: 'text', optional: true, ph: 'e.g. matches the provider statement' }] }],
       extra: `<section class="group"><div class="list"><button class="row act-row" data-sact="mtx"><div class="main"><div class="ttl">Record a missing contribution or withdrawal</div></div></button></div></section>`,
@@ -630,8 +668,8 @@ function reviewSheet(key) {
     return;
   }
   formSheet({
-    title: c.name, values: { ok: !!rv, note: rv?.note || '' },
-    sections: [{ head: `${fDate(c.from)} → ${fDate(c.to)}`, foot: `${money(c.v1)} → ${money(c.v2)}: a change of ${money(c.change, { sign: true })}. Explained: ${money(c.explained, { sign: true })}${c.interest != null ? ` (interest ${money(c.interest)} at ${acc(c.account)?.rate || 0}%, and ${money(c.recorded, { sign: true })} recorded in or out)` : ` from ${c.count} transaction${c.count === 1 ? '' : 's'}`}. That leaves ${money(c.unexplained, { sign: true })} nothing explains - usually a missing import or a payment not recorded.`,
+    title: accName(c.account), values: { ok: !!rv, note: rv?.note || '' },
+    sections: [{ head: `${fDate(c.from)} → ${fDate(c.to)}`, foot: `${money(c.v1)} → ${money(c.v2)}: a change of ${money(c.change, { sign: true })}. Explained: ${money(c.explained, { sign: true })}${c.interest != null ? ` (interest ${money(c.interest)} at ${rateText(acc(c.account), c.from, c.to)}, and ${money(c.recorded, { sign: true })} recorded in or out)` : ` from ${c.count} transaction${c.count === 1 ? '' : 's'}`}. That leaves ${money(c.unexplained, { sign: true })} nothing explains - usually a missing import or a payment not recorded.`,
       fields: [{ key: 'ok', label: 'I’ve looked at this - it’s fine', type: 'toggle' }, { key: 'note', label: 'Note', type: 'text', optional: true, ph: 'e.g. cash deposit' }] }],
     extra: `<section class="group"><div class="list">${TXN_TYPES_UI.has(c.type) ? '<button class="row act-row" data-sact="import"><div class="main"><div class="ttl">Import the missing statement</div></div></button>' : ''}<button class="row act-row" data-sact="mtx"><div class="main"><div class="ttl">Record the missing ${money(Math.abs(c.unexplained))} ${c.unexplained > 0 ? 'in' : 'out'}</div></div></button></div></section>`,
     onSave: (v, act) => {
@@ -720,7 +758,7 @@ function vSnap(date) {
   return {
     title: fDate(date), large: true, back: 'History',
     body: `<div class="hero"><div class="cap">Net worth</div><div class="big amt">${money(T.net).replace('£', '<span class="p">£</span>')}</div></div>
-      ${attributionGroup(date)}${driftGroup(dr)}${rows}${worked.length ? group(worked.map(a => row({ title: esc(a.name), sub: HOW[P.how[a.id]], value: amt(P.balances[a.id], { color: true }), act: 'push', arg: 'acct:' + a.id })).join(''), 'Worked out, not entered', 'Included in net worth that day.') : ''}${group(row({ title: 'Edit these balances', act: 'update', arg: date, cls: 'act-row', chev: false }) + row({ title: 'Delete this update', act: 'del-snap', arg: date, cls: 'act-row danger', chev: false }))}`,
+      ${attributionGroup(date)}${driftGroup(dr)}${rows}${worked.length ? group(worked.map(a => row({ title: esc(accLabel(a)), sub: HOW[P.how[a.id]], value: amt(P.balances[a.id], { color: true }), act: 'push', arg: 'acct:' + a.id })).join(''), 'Worked out, not entered', 'Included in net worth that day.') : ''}${group(row({ title: 'Edit these balances', act: 'update', arg: date, cls: 'act-row', chev: false }) + row({ title: 'Delete this update', act: 'del-snap', arg: date, cls: 'act-row danger', chev: false }))}`,
   };
 }
 
@@ -925,7 +963,7 @@ function catOptions(extra) {
   const list = [...new Set([...planned, ...used, ...DEFAULT_CATS, ...(extra ? [extra] : [])].filter(c => c && !TXL.SPECIAL[c] && c !== 'Uncategorised'))].sort();
   return [...list.map(c => [c, c]), ['Income', 'Income (money in)'], ['Transfer', 'Transfer between your accounts'], ['Ignore', 'Leave out'], ['__new', 'New category…']];
 }
-const accName = id => (acc(id) || { name: 'Unknown account' }).name;
+const accName = id => accLabel(acc(id));
 const monthName = m => fMonth(m + '-01');
 
 // Overview's one line: the latest month with transactions, against plan
@@ -953,13 +991,13 @@ function csvLoaded(text, name, map) {
   if (guess.error === 'unknown') return csvMapSheet(text, name, guess.header);
   if (!guess.txns.length) return toast('No transactions found in that file', true);
   const fmt = guess.format && TXL.FORMATS[guess.format];
-  const opts = data.accounts.filter(a => a.active !== false).map(a => [a.id, `${a.name} (${TYPE_LABEL[a.type]})`]);
+  const opts = data.accounts.filter(a => a.active !== false).map(accOption);
   if (!opts.length) return toast('Add the account under Accounts first', true);
   const want = fmt && fmt.kind === 'card' ? ['card', 'card_0'] : ['current'];
   const suggest = (data.accounts.find(a => want.includes(a.type)) || data.accounts[0]).id;
   formSheet({
     title: 'Import statement', values: { account: suggest, bals: true },
-    sections: [{ head: `${esc(guess.formatName)} · ${guess.txns.length} transactions`, foot: `${fDate(guess.from)} to ${fDate(guess.to)}.${guess.badRows.length ? ` ${guess.badRows.length} rows could not be read and will be skipped.` : ''} Anything already imported is skipped.`, fields: [{ key: 'account', label: 'Which account is this?', type: 'select', options: opts }] },
+    sections: [{ head: `${esc(guess.formatName)} · ${guess.txns.length} transactions`, foot: `${fDate(guess.from)} to ${fDate(guess.to)}.${guess.badRows.length ? ` ${guess.badRows.length} rows could not be read and will be skipped.` : ''} Anything already imported is skipped.`, fields: [{ key: 'account', label: 'Which account is this?', type: 'select', options: opts, stack: true }] },
       ...(guess.balances ? [{ foot: `The statement shows ${money(guess.balances.opening.balance)} before ${fDate(guess.from)} and ${money(guess.balances.closing.balance)} on ${fDate(guess.balances.closing.date)}. Recording them means this account needs no separate balance update for the period, and its checks reconcile exactly.`, fields: [{ key: 'bals', label: 'Record the statement’s balances', type: 'toggle' }] }] : [])],
     extra: meta.encrypt ? '' : '<p class="note"><b>Worth turning on encryption first</b> (Plan › Your data). Transactions show where you shop and when, which is more sensitive than balances, and they are saved in your finance file.</p>',
     onSave: v => {
@@ -1123,7 +1161,7 @@ function ruleSheet(id) {
     title: id ? 'Rule' : 'New rule', values: { ...r, account: r.account || '' },
     sections: [{ fields: [{ key: 'contains', label: 'Description contains', type: 'text' }, { key: 'category', label: 'Category', type: 'select', options: catOptions(r.category).filter(o => o[0] !== '__new') },
       { key: 'min', label: 'Amount from', type: 'money', optional: true }, { key: 'max', label: 'Amount up to', type: 'money', optional: true },
-      { key: 'account', label: 'Account', type: 'select', options: [['', 'Any'], ...data.accounts.map(a => [a.id, a.name])] }] }],
+      { key: 'account', label: 'Account', type: 'select', options: [['', 'Any account'], ...data.accounts.map(accOption)], stack: true }] }],
     extra: id ? destructive('Delete rule', 'delete') : '',
     onSave: (v, act) => {
       if (act === 'delete') { data.categoryRules = data.categoryRules.filter(x => x.id !== id); return changed('Rule deleted'); }
@@ -1200,7 +1238,7 @@ function goalSheet(id) {
   formSheet({
     title: id ? g.name : 'New goal', values: vals,
     sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text', ph: 'e.g. Overpayment pot' }, { key: 'target', label: 'Target', type: 'money' }, { key: 'date', label: 'By', type: 'month' }] },
-      { head: 'Which accounts count', fields: eligible.map(a => ({ key: 'a_' + a.id, label: a.name, type: 'toggle' })) }],
+      { head: 'Which accounts count', fields: eligible.map(a => ({ key: 'a_' + a.id, label: accLabel(a), hint: `${person(a.owner)} · ${TYPE_LABEL[a.type]}`, type: 'toggle' })) }],
     extra: id ? destructive('Delete goal', 'delete') : '',
     onSave: (v, act) => {
       if (act === 'delete') { data.goals = data.goals.filter(x => x.id !== id); if (ui.stacks[ui.tab].at(-1) === 'goal:' + id) ui.stacks[ui.tab].pop(); return changed('Goal deleted'); }
@@ -1224,7 +1262,7 @@ function attributionGroup(date) {
     row({ title: 'Interest', sub: 'Estimated from each account’s rate', value: amt(X.interest, { sign: true, color: true }) }) +
     row({ title: 'Debt paid off', sub: '0% cards and tax owed', value: amt(X.debt, { sign: true, color: true }) }) +
     row({ title: 'Change in net worth', value: amt(X.change, { sign: true, color: true }), cls: 'total' }),
-    `Where the change came from<b>since ${fDate(prev.date)}</b>`, inv.length ? inv.map(a => `${esc(a.name)}: ${(a.return * 100).toFixed(1)}%${X.days > 60 ? ` (${(a.annual * 100).toFixed(1)}% a year)` : ''}${a.paidIn ? ` after ${money(a.paidIn)} paid in` : ''}`).join(' · ') + '. Returns are money-weighted: what you paid in counts from halfway through.' : 'Enter what you paid into S&S ISAs and pensions when you update balances, to separate growth from money put in.');
+    `Where the change came from<b>since ${fDate(prev.date)}</b>`, inv.length ? inv.map(a => `${esc(accName(a.id))}: ${(a.return * 100).toFixed(1)}%${X.days > 60 ? ` (${(a.annual * 100).toFixed(1)}% a year)` : ''}${a.paidIn ? ` after ${money(a.paidIn)} paid in` : ''}`).join(' · ') + '. Returns are money-weighted: what you paid in counts from halfway through.' : 'Enter what you paid into S&S ISAs and pensions when you update balances, to separate growth from money put in.');
 }
 
 // ---------- range of outcomes and stress tests (Phase 4) ----------
@@ -1671,7 +1709,7 @@ function fieldHTML(f, v) {
   const id = 'f_' + f.key;
   const lab = `<label for="${id}">${esc(f.label)}${f.hint ? `<span class="sub">${esc(f.hint)}</span>` : ''}</label>`;
   if (f.type === 'toggle') return `<div class="field">${lab}<span class="switch"><input id="${id}" name="${f.key}" type="checkbox" ${v ? 'checked' : ''}><span></span></span></div>`;
-  if (f.type === 'select') return `<div class="field">${lab}<select id="${id}" name="${f.key}">${f.options.map(([ov, ol]) => `<option value="${esc(ov)}" ${String(ov) === String(v ?? '') ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select></div>`;
+  if (f.type === 'select') return `<div class="field${f.stack ? ' stack' : ''}">${lab}<select id="${id}" name="${f.key}">${f.options.map(([ov, ol]) => `<option value="${esc(ov)}" ${String(ov) === String(v ?? '') ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select></div>`;
   if (f.type === 'date') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="date" value="${esc(v || '')}"></div>`;
   if (f.type === 'month') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="month" value="${esc(v ? String(v).slice(0, 7) : '')}" placeholder="YYYY-MM"></div>`;
   const shown = v == null || v === '' ? '' : (f.type === 'money' ? nf2.format(v).replace(/\.00$/, '') : String(v));
@@ -1716,7 +1754,7 @@ function updateSheet(date) {
         const e = auto ? est(a.id) : null;
         const inv = (a.type === 'ss_isa' || a.type === 'pension') && (target ? snapsSorted().some(s => s.date < target.date) : !!last);
         const cv = target && target.contrib && target.contrib[a.id] != null ? String(target.contrib[a.id]) : '';
-        return `<div class="field"><label for="b_${a.id}">${esc(a.name)}<span class="sub" data-d="${a.id}">${liab ? 'Amount owed · ' : ''}last ${v == null ? '–' : money(liab ? Math.abs(v) : v)}</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="b_${a.id}" name="b_${a.id}" class="bal-in num" data-liab="${liab ? 1 : 0}" data-last="${v ?? ''}" data-est="${e ?? ''}" value="${esc(shown)}" placeholder="${e != null ? 'about ' + nf0.format(e) : '0'}" autocomplete="off"></span></div>` + (auto ? `<div class="gf" style="margin:-4px 0 6px">Leave blank to let Tally work it out at ${a.rate || 0}%</div>` : '') +
+        return `<div class="field"><label for="b_${a.id}">${esc(a.name)}<span class="sub" data-d="${a.id}">${liab ? 'Amount owed · ' : ''}last ${v == null ? '–' : money(liab ? Math.abs(v) : v)}</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="b_${a.id}" name="b_${a.id}" class="bal-in num" data-liab="${liab ? 1 : 0}" data-last="${v ?? ''}" data-est="${e ?? ''}" value="${esc(shown)}" placeholder="${e != null ? 'about ' + nf0.format(e) : '0'}" autocomplete="off"></span></div>` + (auto ? `<div class="gf" style="margin:-4px 0 6px">Leave blank to let Tally work it out at ${rateOn(a, date || todayISO())}%</div>` : '') +
           (inv ? `<div class="field"><label for="c_${a.id}">Paid in since last update<span class="sub">So growth isn’t mistaken for money you put in</span></label><span class="amtin">£<input type="text" inputmode="decimal" id="c_${a.id}" name="c_${a.id}" class="contrib-in num" value="${esc(cv)}" placeholder="0" autocomplete="off"></span></div>` : '');
       }).join('')}</div></section>`;
     }).join('') + `<section class="group"><div class="list"><div class="field"><label>Net worth</label><span class="num" id="u_total" style="font-weight:600"></span></div></div></section>`;
@@ -1760,7 +1798,8 @@ function accountSheet(id) {
   formSheet({
     title: id ? 'Edit account' : 'New account', values: { ...a, access: a.access || 'instant', flexible: a.flexible !== false },
     sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text', ph: 'e.g. Vanguard S&S ISA' }, { key: 'owner', label: 'Belongs to', type: 'select', options: ownerOpts() }, { key: 'type', label: 'Type', type: 'select', options: Object.entries(TYPE_LABEL) }] },
-    { head: 'Projection', fields: [{ key: 'rate', label: 'Interest or return', type: 'percent', unit: '%', hint: 'Cash ISAs, savings and pensions use this; S&S ISAs use the scenario return' }, { key: 'active', label: 'Open', type: 'toggle', hint: 'Closed accounts drop out of new updates' }] },
+    { head: 'Projection', foot: id ? `Interest rate: ${rateOn(a, todayISO())}% now. Rates are kept by date - change it under Interest rates on the account’s page, so earlier months keep the rate they had.` : 'Cash ISAs, savings and pensions use the rate; S&S ISAs use the scenario return. If it changes later, add the new rate from its date on the account’s page.',
+      fields: [...(id ? [] : [{ key: 'rate', label: 'Interest or return', type: 'percent', unit: '%' }]), { key: 'active', label: 'Open', type: 'toggle', hint: 'Closed accounts drop out of new updates' }] },
     { head: 'How quickly you can use it', foot: 'Used to show what is genuinely available at a given date, such as your remortgage. Not needed for cards or tax owed.', fields: [
       { key: 'access', label: 'Access', type: 'select', options: ACCESS_OPTS },
       { key: 'noticeDays', label: 'Notice needed', type: 'number', unit: 'days', optional: true, hint: 'Notice accounts only' },
@@ -1828,7 +1867,7 @@ function spendSheet(id, cat, inBundle) {
 }
 function eventSheet(id, inBundle, inMonth) {
   const x = id ? flowById(id) : { name: '', amount: -1000, start: inMonth || (inBundle ? inBundle.start : thisMonth()), on: true, settles: '' };
-  const debtOpts = [['', 'Nothing'], ...data.accounts.filter(a => LIAB.has(a.type)).map(a => [a.id, a.name])];
+  const debtOpts = [['', 'Nothing'], ...data.accounts.filter(a => LIAB.has(a.type)).map(accOption)];
   formSheet({
     title: id ? 'Edit item' : 'New item', values: { ...x, dir: x.amount < 0 ? 'out' : 'in', abs: Math.abs(x.amount), settles: x.settles || '' },
     sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'dir', label: 'Type', type: 'select', options: [['out', 'Payment out'], ['in', 'Money in']] }, { key: 'abs', label: 'Amount', type: 'money' }, { key: 'start', label: 'Month', type: 'month', hint: 'Counted in this month' }] },
@@ -1962,7 +2001,8 @@ const actions = {
   'cat-tx': id => catSheet({ id }), recal: recalApply,
   real: () => { ui.real = !ui.real; render(); },
   'add-bal': id => balanceSheet(id, null), 'edit-bal': arg => { const [id, d] = arg.split('|'); balanceSheet(id, d); },
-  'add-mtx': id => moneySheet(id, null), 'edit-mtx': id => moneySheet(null, id), review: reviewSheet,
+  'add-mtx': id => moneySheet(id, null),
+  'add-rate': id => rateSheet(id, null), 'edit-rate': arg => { const i = arg.indexOf('|'); rateSheet(arg.slice(0, i), arg.slice(i + 1)); }, 'edit-mtx': id => moneySheet(null, id), review: reviewSheet,
   'edit-checks': () => formSheet({ title: 'When to ask', values: data.rules.checks, sections: [{ foot: 'A gap between two balances is listed when nothing explains more than this much of it: the larger of the two.', fields: [{ key: 'abs', label: 'More than', type: 'money' }, { key: 'pct', label: 'Or more than', type: 'percent', unit: '% of the balance' }] }], onSave: v => { data.rules.checks = { abs: Math.max(0, v.abs), pct: Math.max(0, v.pct) }; changed('Saved'); } }), 'edit-goal': id => goalSheet(id || null), 'mc-vol': v => { ui.mcVol = +v; render(); }, reminder: downloadReminder, 'edit-rule': id => ruleSheet(id || null),
   'undo-import': id => { const i = data.imports.find(x => x.id === id); if (!i || !confirm(`Remove the ${i.count} transactions this import added?`)) return; data.transactions = data.transactions.filter(t => t.batch !== id); data.imports = data.imports.filter(x => x.id !== id); changed('Import removed'); },
   'cmp-sc': k => { const cur = (ui.cmpSc || Object.keys(data.scenarios)).filter(x => data.scenarios[x]); ui.cmpSc = cur.includes(k) ? (cur.length > 1 ? cur.filter(x => x !== k) : cur) : [...cur, k].slice(-3); render(); }, 'leak-ok': () => { ui.leak = null; render(); },

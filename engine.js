@@ -107,7 +107,7 @@ function balanceOn(data, id, date) {
   }
   if (!next && a.active === false) return null;
   if (INTEREST_TYPES.has(a.type)) {
-    const r = (+a.rate || 0) / 100, grow = (v, d1) => v * Math.pow(1 + r, (dayNum(date) - dayNum(d1)) / 365);
+    const grow = (v, d1) => v * EM.growthFactor(a, d1, date); // at whatever rate was in force on each day
     const v = grow(prev.v, prev.date) + between(prev.date, date).filter(t => t.kind !== 'interest').reduce((s, t) => s + grow(t.amount, t.date), 0);
     return { v, how: 'interest', from: prev.date };
   }
@@ -175,18 +175,19 @@ function project(data, scenarioKey, months, opts = {}) {
   const other = {};           // accountId -> balance (savings, pensions, 0% cards, tax)
   const heldIsa = {};         // cash ISAs on a fixed term or notice: not drawn on, grow at their own rate
   const byId = Object.fromEntries(accs.map(a => [a.id, a]));
-  let cashIsaRateW = 0;
+  const cashIsaW = []; // instant cash ISAs and their opening balances: the pool's rate each month is their weighted rate then
   for (const a of accs) {
     const v = snap.balances[a.id]; if (v == null) continue;
     const g = GROUPS[a.type] || GROUPS.savings;
     if (g.pool === 'cash') cash += v;
     else if (a.type === 'ss_isa') isaSS += v;
     else if (a.type === 'cash_isa' && (a.access === 'fixed' || a.access === 'notice')) heldIsa[a.id] = v;
-    else if (a.type === 'cash_isa') { isaCash += v; cashIsaRateW += v * (+a.rate || 0); }
+    else if (a.type === 'cash_isa') { isaCash += v; cashIsaW.push([a, v]); }
     else other[a.id] = v;
   }
   const matK = a => a.access === 'fixed' && a.maturity ? EM.monthKey(a.maturity) : null;
-  const cashIsaRate = isaCash ? cashIsaRateW / isaCash : 3;
+  const cashIsaRateAt = date => { const w = cashIsaW.reduce((s, [, v]) => s + v, 0); return w ? cashIsaW.reduce((s, [a, v]) => s + v * EM.rateOn(a, date), 0) / w : 3; };
+  const cashIsaRate = cashIsaRateAt(snap.date);
   const ssShare = Math.min(100, Math.max(0, +r.sweepToSS || 0)) / 100;
 
   // Each part runs on its own: its own balance, rate, and a payment recalculated when its fix ends.
@@ -349,11 +350,11 @@ function project(data, scenarioKey, months, opts = {}) {
     if (opts.ssReturns) { const g = isaSS * opts.ssReturns[i]; isaSS += g; growth += g; }
     if (sc.growth) {
       const gSS = opts.ssReturns ? 0 : isaSS * (sc.ssReturn || 0) / 100 / 12;
-      const gC = isaCash * cashIsaRate / 100 / 12;
+      const gC = isaCash * cashIsaRateAt(date) / 100 / 12;
       isaSS += gSS; isaCash += gC; growth += gSS + gC;
-      for (const id in heldIsa) { const g = heldIsa[id] * (+byId[id].rate || 0) / 100 / 12; heldIsa[id] += g; growth += g; }
+      for (const id in heldIsa) { const g = heldIsa[id] * EM.rateOn(byId[id], date) / 100 / 12; heldIsa[id] += g; growth += g; }
       for (const a of accs) if (other[a.id] != null && (a.type === 'savings' || a.type === 'pension')) {
-        const g = other[a.id] * (+a.rate || 0) / 100 / 12; other[a.id] += g; growth += g;
+        const g = other[a.id] * EM.rateOn(a, date) / 100 / 12; other[a.id] += g; growth += g;
       }
     }
     const otherTotal = Object.values(other).reduce((s, v) => s + v, 0);

@@ -53,7 +53,8 @@ d.snapshots.push({ date: '2027-06-01', balances: { cur: 15000, cisa: 27500, ss: 
 const X = A.attribution(d, '2026-06-01', '2027-06-01'), yrs = 365 / 365.25;
 near(X.change, 116500 - 98000, 'net worth went up 18,500');
 near(X.growth, (3000 - 1000) + (2000 - 500), 'growth: S&S 2,000 and pension 1,500 after what was paid in');
-const i = (10000 + 27500) / 2 * 0.03 * yrs; near(X.interest, i, 'cash ISA interest: average balance × 3% × a year');
+// interest estimate: average balance × the growth at the account's rate over the period - 365 days at 3% is exactly 3%
+const i = (10000 + 27500) / 2 * 0.03; near(X.interest, i, 'cash ISA interest: average balance × 3% for the year');
 near(X.debt, 1000, 'the 0% card went down by 1,000');
 near(X.saved + X.growth + X.interest + X.debt, X.change, 'the four piles add up to the change exactly');
 const ss = X.accounts.find(a => a.id === 'ss');

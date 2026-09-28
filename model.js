@@ -57,8 +57,14 @@
 //   transactions[].kind - for money entered by hand: 'in' | 'out' | 'interest' (interest or dividends paid in).
 //   reviews - {'accountId|from|to': {status:'ok'|'checked', at, note}}: a gap in the checks marked as looked at.
 //   rules.checks - {abs, pct}: a gap between two balances is material above max(abs £, pct % of the balance).
+//
+// Version 10 (Sep 2026):
+//   accounts[].rates - [{from:'YYYY-MM-DD'|null, rate}]: the account's interest (or expected return) over time.
+//              `from: null` is the rate before any dated change. A change applies from its date on and never
+//              touches the periods before it. accounts[].rate is kept equal to the rate in force today, for display.
+//              rateOn() and growthFactor() are the only readers.
 const TallyModel = (() => {
-  const VERSION = 9;
+  const VERSION = 10;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -75,6 +81,7 @@ const TallyModel = (() => {
 
   function defaultAccess(a) {
     if (LIABILITIES.has(a.type)) { delete a.access; return a; }
+    if (!Array.isArray(a.rates) || !a.rates.length) a.rates = [{ from: null, rate: +a.rate || 0 }];
     if (!ACCESS[a.access]) a.access = DEFAULT_ACCESS[a.type] || 'instant';
     if (a.type === 'cash_isa' && a.flexible == null) a.flexible = true;
     return a;
@@ -198,7 +205,25 @@ const TallyModel = (() => {
     return { from: starts[0] || null, to: open ? null : ends.at(-1) };
   }
 
-  return { VERSION, REMORTGAGE, bundleOn, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
+  // ---------- interest rates over time ----------
+  const sortedRates = a => (Array.isArray(a.rates) && a.rates.length ? a.rates.slice().sort((x, y) => (x.from || '').localeCompare(y.from || '')) : [{ from: null, rate: +a.rate || 0 }]);
+  // The rate in force on a date ('YYYY-MM-DD' or 'YYYY-MM'): the latest change on or before it.
+  function rateOn(a, date) {
+    const d = String(date).length === 7 ? date + '-01' : String(date);
+    let r = null; for (const x of sortedRates(a)) if (!x.from || x.from <= d) r = +x.rate || 0;
+    return r == null ? +sortedRates(a)[0].rate || 0 : r;
+  }
+  // What £1 on d1 grows to by d2, compounding daily over 365 at whatever rate was in force on each day.
+  function growthFactor(a, d1, d2) {
+    const dn = d => Date.parse(String(d).slice(0, 10) + 'T00:00:00Z') / 864e5;
+    if (d2 <= d1) return 1;
+    const cuts = sortedRates(a).map(x => x.from).filter(f => f && f > d1 && f < d2);
+    const pts = [d1, ...cuts, d2]; let g = 1;
+    for (let i = 1; i < pts.length; i++) g *= Math.pow(1 + rateOn(a, pts[i - 1]) / 100, (dn(pts[i]) - dn(pts[i - 1])) / 365);
+    return g;
+  }
+
+  return { VERSION, REMORTGAGE, rateOn, growthFactor, bundleOn, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyModel;

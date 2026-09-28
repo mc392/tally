@@ -104,7 +104,7 @@ const TallyAnalysis = (() => {
         if (base > 0 && years > 0) { row.return = (d - C) / base; row.annual = Math.pow(1 + row.return, 1 / years) - 1; }
       } else if (a.type === 'savings' || a.type === 'cash_isa') {
         // with money in or out recorded, interest is what is left of the change; without, it is estimated from the rate
-        const f = flows(a.id), i = f.length ? d - recorded(a.id) : (b1 + b2) / 2 * (+a.rate || 0) / 100 * years;
+        const f = flows(a.id), i = f.length ? d - recorded(a.id) : (b1 + b2) / 2 * (M.growthFactor(a, date1, date2) - 1);
         row.interest = i; out.interest += i; out.saved += d - i;
       } else if (LIAB.has(a.type)) { row.debt = d; out.debt += d; }
       else out.saved += d;
@@ -212,7 +212,7 @@ const TallyAnalysis = (() => {
           const explained = inGap.reduce((s, t) => s + t.amount, 0);
           Object.assign(item, { kind: 'missing', explained, unexplained: change - explained, count: inGap.length });
         } else if (INT.has(a.type)) {
-          const r = (+a.rate || 0) / 100, grow = (v, d) => v * Math.pow(1 + r, (dn(o2.date) - dn(d)) / 365);
+          const grow = (v, d) => v * M.growthFactor(a, d, o2.date); // at the rate in force on each day
           const moved = inGap.filter(t => t.kind !== 'interest'), expectedEnd = grow(o1.v, o1.date) + moved.reduce((s, t) => s + grow(t.amount, t.date), 0);
           const interest = expectedEnd - o1.v - moved.reduce((s, t) => s + t.amount, 0);
           Object.assign(item, { kind: 'missing', explained: expectedEnd - o1.v, interest, recorded: moved.reduce((s, t) => s + t.amount, 0), unexplained: o2.v - expectedEnd, count: moved.length });
