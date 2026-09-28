@@ -49,8 +49,16 @@
 //   goals[] - {id, name, target, date:'YYYY-MM', accounts:[ids]} (see goalStatus in analysis.js).
 //   snapshots[].contrib - {accountId: £} paid into an S&S ISA or pension since the update before, so growth
 //              can be told apart from money put in.
+//
+// Version 9 (Sep 2026):
+//   snapshots[] may hold ANY subset of accounts: each account has its own dated balances, and the engine works
+//              out the rest (balanceOn in engine.js). An older build would read a one-account update as the whole
+//              position and drop every other account - hence the bump.
+//   transactions[].kind - for money entered by hand: 'in' | 'out' | 'interest' (interest or dividends paid in).
+//   reviews - {'accountId|from|to': {status:'ok'|'checked', at, note}}: a gap in the checks marked as looked at.
+//   rules.checks - {abs, pct}: a gap between two balances is material above max(abs £, pct % of the balance).
 const TallyModel = (() => {
-  const VERSION = 8;
+  const VERSION = 9;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -123,6 +131,7 @@ const TallyModel = (() => {
     d.bundles ||= [];
     d.remortgageOptions ||= [];
     d.goals ||= [];
+    d.reviews ||= {};
     d.transactions ||= []; d.imports ||= []; d.categoryRules ||= []; d.categoryMap ||= {};
     for (const k in d.scenarios || {}) { const sc = d.scenarios[k]; sc.option ??= null; sc.bundles ||= {}; sc.rateShift ??= 0; }
     for (const b of d.bundles) { b.on ??= true; b.scale ??= 1; b.contingency ??= 0; }
@@ -132,6 +141,7 @@ const TallyModel = (() => {
     const who = isaPeople(d);
     r.isaPerPerson ??= ISA_PER_PERSON;
     r.remortgage = Object.assign({}, REMORTGAGE, r.remortgage || {});
+    r.checks = Object.assign({ abs: 100, pct: 1 }, r.checks || {});
     r.isaUsedBy ||= {};
     // fill order: keep the saved order, drop anyone who no longer exists, add anyone new at the end
     r.isaFillOrder = (r.isaFillOrder || []).filter(p => who.includes(p));

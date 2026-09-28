@@ -7,7 +7,7 @@
 //   stressed        - one-tap shocks (4.2)
 //   monteCarlo      - a range of outcomes (4.1), seeded so it can be tested and repeated
 const TallyAnalysis = (() => {
-  const E = typeof project !== 'undefined' ? { project, latestSnapshot, snapshotTotals, readiness, mortgageParts } : require('./engine.js');
+  const E = typeof project !== 'undefined' ? { project, latestSnapshot, snapshotTotals, readiness, mortgageParts, positionOn, observations, balanceOn } : require('./engine.js');
   const M = typeof TallyModel !== 'undefined' ? TallyModel : require('./model.js');
   const LIAB = new Set(['card_0', 'tax']); // everyday credit cards sit with cash, as in the projection
   const INVEST = new Set(['ss_isa', 'pension']);
@@ -85,8 +85,11 @@ const TallyAnalysis = (() => {
   //               amount under debt, so it nets to nothing - which is what it does to net worth.
   // A money-weighted return per investment account (Modified Dietz: contributions assumed mid-period), annualised.
   function attribution(data, date1, date2) {
-    const s1 = data.snapshots.find(s => s.date === date1), s2 = data.snapshots.find(s => s.date === date2);
-    if (!s1 || !s2) return null;
+    if (!data.snapshots.some(s => s.date === date1) || !data.snapshots.some(s => s.date === date2)) return null;
+    // every account as it stood on each date - entered or worked out - so an update of one account still compares like with like
+    const s1 = E.positionOn(data, date1), s2 = { ...E.positionOn(data, date2), contrib: (data.snapshots.find(s => s.date === date2) || {}).contrib };
+    const flows = id => (data.transactions || []).filter(t => t.account === id && t.date > date1 && t.date <= date2);
+    const recorded = id => flows(id).filter(t => t.kind !== 'interest').reduce((s, t) => s + t.amount, 0);
     const days = (Date.parse(date2) - Date.parse(date1)) / 864e5, years = days / 365.25;
     const out = { from: date1, to: date2, days, saved: 0, growth: 0, interest: 0, debt: 0, accounts: [] };
     for (const a of data.accounts) {
@@ -94,12 +97,14 @@ const TallyAnalysis = (() => {
       if (v1 == null && v2 == null) continue;
       const b1 = +v1 || 0, b2 = +v2 || 0, d = b2 - b1, row = { id: a.id, name: a.name, type: a.type, change: d };
       if (INVEST.has(a.type)) {
-        const C = +((s2.contrib || {})[a.id]) || 0;
+        // paid in: anything recorded as money in or out (not dividends, which are growth), plus the older per-update figure
+        const C = (+((s2.contrib || {})[a.id]) || 0) + recorded(a.id);
         row.paidIn = C; row.growth = d - C; out.growth += d - C; out.saved += C;
         const base = b1 + 0.5 * C;
         if (base > 0 && years > 0) { row.return = (d - C) / base; row.annual = Math.pow(1 + row.return, 1 / years) - 1; }
       } else if (a.type === 'savings' || a.type === 'cash_isa') {
-        const i = (b1 + b2) / 2 * (+a.rate || 0) / 100 * years;
+        // with money in or out recorded, interest is what is left of the change; without, it is estimated from the rate
+        const f = flows(a.id), i = f.length ? d - recorded(a.id) : (b1 + b2) / 2 * (+a.rate || 0) / 100 * years;
         row.interest = i; out.interest += i; out.saved += d - i;
       } else if (LIAB.has(a.type)) { row.debt = d; out.debt += d; }
       else out.saved += d;
@@ -184,7 +189,48 @@ const TallyAnalysis = (() => {
       end: { p10: pct(endS, 0.1), p50: pct(endS, 0.5), p90: pct(endS, 0.9) }, available: avS.length ? { p10: pct(avS, 0.1), p50: pct(avS, 0.5), p90: pct(avS, 0.9) } : null, target };
   }
 
-  return { realValue, isaYear, goalStatus, goalValueAt, attribution, STRESSES, stressed, monteCarlo, rng, normals };
+  // ---------- checks: is every move between two balances explained? ----------
+  // For each account, each gap between two balances entered for it:
+  //   current accounts and cards with transactions - the change should equal the transactions in between
+  //   savings and cash ISAs - the first balance grown at the rate, plus money in and out, should give the second
+  //   S&S ISAs and pensions - the change less money paid in is the market's doing: an implied return to cross-check
+  // A gap is material above max(rules.checks.abs, rules.checks.pct % of the balance). Marking one as looked at is
+  // stored in data.reviews, keyed by the account and both dates, so a new balance in between asks again.
+  const TXN = new Set(['current', 'card']), INT = new Set(['savings', 'cash_isa']);
+  function checks(data) {
+    const ck = (data.rules && data.rules.checks) || { abs: 100, pct: 1 }, out = [];
+    const dn = d => Date.parse(d + 'T00:00:00Z') / 864e5;
+    for (const a of data.accounts) {
+      const obs = E.observations(data, a.id), tx = (data.transactions || []).filter(t => t.account === a.id);
+      for (let i = 1; i < obs.length; i++) {
+        const o1 = obs[i - 1], o2 = obs[i], change = o2.v - o1.v, inGap = tx.filter(t => t.date > o1.date && t.date <= o2.date);
+        const key = `${a.id}|${o1.date}|${o2.date}`, review = (data.reviews || {})[key] || null;
+        const limit = Math.max(+ck.abs || 0, (+ck.pct || 0) / 100 * Math.max(Math.abs(o1.v), Math.abs(o2.v)));
+        const item = { key, account: a.id, name: a.name, type: a.type, from: o1.date, to: o2.date, v1: o1.v, v2: o2.v, change, review, limit };
+        if (TXN.has(a.type)) {
+          if (!tx.length) continue; // an account never imported is not being tracked by transaction
+          const explained = inGap.reduce((s, t) => s + t.amount, 0);
+          Object.assign(item, { kind: 'missing', explained, unexplained: change - explained, count: inGap.length });
+        } else if (INT.has(a.type)) {
+          const r = (+a.rate || 0) / 100, grow = (v, d) => v * Math.pow(1 + r, (dn(o2.date) - dn(d)) / 365);
+          const moved = inGap.filter(t => t.kind !== 'interest'), expectedEnd = grow(o1.v, o1.date) + moved.reduce((s, t) => s + grow(t.amount, t.date), 0);
+          const interest = expectedEnd - o1.v - moved.reduce((s, t) => s + t.amount, 0);
+          Object.assign(item, { kind: 'missing', explained: expectedEnd - o1.v, interest, recorded: moved.reduce((s, t) => s + t.amount, 0), unexplained: o2.v - expectedEnd, count: moved.length });
+        } else if (a.type === 'ss_isa' || a.type === 'pension') {
+          const snap = data.snapshots.find(s => s.date === o2.date), C = (+((snap && snap.contrib) || {})[a.id] || 0) + inGap.filter(t => t.kind !== 'interest').reduce((s, t) => s + t.amount, 0);
+          const market = change - C, base = o1.v + 0.5 * C, yrs = (dn(o2.date) - dn(o1.date)) / 365.25;
+          const ret = base > 0 ? market / base : null;
+          Object.assign(item, { kind: 'return', paidIn: C, market, return: ret, annual: ret != null && yrs > 0 ? Math.pow(1 + ret, 1 / yrs) - 1 : null, unexplained: market });
+        } else continue;
+        item.material = Math.abs(item.unexplained) > limit;
+        item.open = item.material && !review;
+        out.push(item);
+      }
+    }
+    return out.sort((x, y) => y.to.localeCompare(x.to));
+  }
+
+  return { checks, realValue, isaYear, goalStatus, goalValueAt, attribution, STRESSES, stressed, monteCarlo, rng, normals };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyAnalysis;
