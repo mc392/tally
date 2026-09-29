@@ -88,5 +88,13 @@ assert.ok(X.plans[1].marks.some(m => m.kind === 'mortgage' && m.date === '2027-0
 const sc = Object.fromEntries(X.score.map(m => [m.key, m]));
 assert.deepStrictEqual(sc.interest.best, [false, true, false], 'fixing at 4% pays the least interest');
 near(X.plans[2].s.spend[1] - X.plans[0].s.spend[1], 900, 'the nursery costs £900 a month more');
+// ISA allowance in the comparison: each plan's own isaTimeline, so it matches that plan's ISA screen exactly
+X.plans.forEach(P => {
+  const T = A.isaTimeline(d, P.k, P.isa.years.length);
+  assert.deepStrictEqual(P.isa.years.map(y => [y.label, y.used, y.unused]), T.years.map(y => [y.label, y.used, y.unused]), `${P.name}: same as its ISA screen`);
+  near(sc.isaLost.vals[X.plans.indexOf(P)], T.lost, `${P.name}: allowance lost is the sum of each year's unused`);
+  P.s.isaUsed.forEach((v, i) => i && assert.ok(v >= P.s.isaUsed[i - 1] - 1e-9, 'the running total never falls'));
+  P.s.isaUsed.forEach((v, i) => assert.ok(v <= P.s.isaAvail[i] + 1e-6, 'and never passes the allowance there has been'));
+});
 console.log('  ✓ comparison figures: running interest, months below the floor, parts adding up, the switch marked, the scorecard');
 console.log('All plan checks pass ✓');

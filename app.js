@@ -1847,19 +1847,32 @@ const CMP_CHARTS = [
   { k: 'spend', g: 'time', t: 'Spending each month', d: 'Life events and plan-only costs show here' },
   { k: 'mix', g: 'at', t: 'Where the money is', d: 'What each plan holds, and owes, on a date' },
   { k: 'why', g: 'at', t: 'Why they differ', d: 'Each part of the gap from the first plan' },
-  { k: 'score', g: 'at', t: 'Scorecard', d: 'Six questions, the best answer marked' },
+  { k: 'score', g: 'at', t: 'Scorecard', d: 'A handful of questions - net worth, cash, interest, ISA allowance lost - with the best answer marked' },
   { k: 'tight', g: 'line', t: 'Tight months', d: 'Money you could reach within days (cash and instant-access cash ISAs) above your cash floor, month by month' },
   { k: 'marks', g: 'line', t: 'What happens when', d: 'One-offs and mortgage changes on a timeline' },
+  { k: 'isaYears', g: 'isa', t: 'ISA allowance, tax year by tax year', d: 'Each plan’s allowance used, and what it would lose' },
+  { k: 'isaCum', g: 'isa', t: 'ISA allowance used, running total', d: 'Against all the allowance there has been so far' },
+  { k: 'isaReview', g: 'isa', t: 'ISA allowance review', d: 'Used and lost per tax year, with the best plan marked' },
 ];
-const CMP_GROUPS = [['time', 'Over time'], ['at', 'On a date'], ['line', 'Timelines']];
-const CMP_DEFAULT = ['net', 'diff', 'pay', 'cash', 'left', 'mix', 'why', 'score'];
-const cmpCharts = () => { try { const v = JSON.parse(localStorage.getItem('tally-cmp-charts')); if (Array.isArray(v)) return v.filter(k => CMP_CHARTS.some(c => c.k === k)); } catch (e) { } return CMP_DEFAULT; };
+const CMP_GROUPS = [['time', 'Over time'], ['isa', 'ISA allowance'], ['at', 'On a date'], ['line', 'Timelines']];
+const CMP_DEFAULT = ['net', 'diff', 'pay', 'cash', 'left', 'isaYears', 'isaReview', 'mix', 'why', 'score'];
+// The choice is saved with the charts that existed when it was made, so a chart added later that is in the defaults
+// still appears for someone who chose theirs before it existed. (The first saved form was a bare list, made when the
+// 17 charts before the ISA ones were all there were.)
+const CMP_FIRST17 = ['net', 'diff', 'clear', 'real', 'cash', 'avail', 'isa', 'mortgage', 'pay', 'interest', 'left', 'spend', 'mix', 'why', 'score', 'tight', 'marks'];
+const cmpCharts = () => {
+  try {
+    const v = JSON.parse(localStorage.getItem('tally-cmp-charts')); if (!v) return CMP_DEFAULT;
+    const on = Array.isArray(v) ? v : v.on || [], known = Array.isArray(v) ? CMP_FIRST17 : v.known || CMP_FIRST17;
+    return CMP_CHARTS.map(c => c.k).filter(k => on.includes(k) || (!known.includes(k) && CMP_DEFAULT.includes(k)));
+  } catch (e) { return CMP_DEFAULT; }
+};
 function cmpChartsSheet() {
   const on = new Set(cmpCharts());
   formSheet({
     title: 'Charts to show', values: Object.fromEntries(CMP_CHARTS.map(c => [c.k, on.has(c.k)])),
     sections: CMP_GROUPS.map(([g, h]) => ({ head: h, fields: CMP_CHARTS.filter(c => c.g === g).map(c => ({ key: c.k, label: c.t, type: 'toggle', hint: c.d })) })),
-    onSave: v => { try { localStorage.setItem('tally-cmp-charts', JSON.stringify(CMP_CHARTS.filter(c => v[c.k]).map(c => c.k))); } catch (e) { } render(); },
+    onSave: v => { try { localStorage.setItem('tally-cmp-charts', JSON.stringify({ on: CMP_CHARTS.filter(c => v[c.k]).map(c => c.k), known: CMP_CHARTS.map(c => c.k) })); } catch (e) { } render(); },
   });
 }
 const SC_COLORS = ['var(--c-net)', 'var(--c-isa)', 'var(--c-cash)'];
@@ -1897,9 +1910,12 @@ function vPlans() {
     score: c => card(c, scoreHTML(X), fMonth(X.date)),
     tight: c => card(c, tightHTML(X), `floor ${short(X.floor)}`),
     marks: c => card(c, marksHTML(X)),
+    isaYears: c => card(c, isaCmpYears(X), X.plans.some(u => u.isa && u.isa.lost > 0.5) ? 'unused hatched' : 'all used'),
+    isaCum: c => card(c, line('c-pl-isacum', u => u.s.isaUsed) + legend + `<p class="cnote">All the allowance there has been by then: <span class="amt">${short(P[0].s.isaAvail.at(-1) || 0)}</span> by ${esc(fMonth(P[0].rows.at(-1).date))}. A line that falls behind another is allowance that plan never uses.</p>`),
+    isaReview: c => card(c, isaCmpReview(X)),
   };
   const byGroup = g => CMP_CHARTS.filter(c => c.g === g && show.includes(c.k)).map(c => draw[c.k](c)).join('');
-  const gTime = byGroup('time'), gAt = byGroup('at'), gLine = byGroup('line');
+  const gTime = byGroup('time'), gIsa = byGroup('isa'), gAt = byGroup('at'), gLine = byGroup('line');
   const kd = [...(F != null && F >= 0 && F < H ? [['At the fix end', F]] : []), ['In 1 year', 11], ['In 3 years', 35], ['At the end', H - 1]].filter(([, j]) => j < H);
   const metrics = [['Net worth', 'net'], ['Cash', 'cash'], ['Free to overpay', 'avail'], ['Mortgage left', 'mortgage']];
   const table = kd.map(([label, j]) => `<tr class="sec"><th colspan="${P.length + 1}">${label} · ${fMonth(P[0].rows[j].date)}</th></tr>` + metrics.map(([m, f]) => {
@@ -1911,7 +1927,7 @@ function vPlans() {
     body: `<div class="chips">${Object.entries(data.scenarios).map(([k, v]) => `<button class="${keys.includes(k) ? 'on' : ''}" data-act="cmp-sc" data-arg="${k}">${esc(v.name)}</button>`).join('')}<button data-act="add-plan">＋ New plan</button></div>
       <div class="chips small">${[[36, '3 years'], [60, '5 years'], [120, '10 years']].map(([m, l]) => `<button class="${m === H ? 'on' : ''}" data-act="cmp-h" data-arg="${m}">${l}</button>`).join('')}<button data-act="cmp-charts">Charts · ${show.length} of ${CMP_CHARTS.length}</button></div>
       ${group(P.map((u, i) => row({ title: `<span class="dotc" style="background:${SC_COLORS[i]}"></span>${esc(u.name)}`, sub: planSummary(u.k), act: 'push', arg: 'scenario:' + u.k })).join(''), 'Plans compared', 'Up to three at once. Tap one to change what happens in it.')}
-      ${gTime}${gAt || gLine ? '' : ''}${gAt ? `<div class="gh" style="margin:0 16px 6px">On a date</div>${atChips}${gAt}` : ''}${gLine}
+      ${gTime}${gIsa ? `<div class="gh" style="margin:0 16px 6px">ISA allowance</div>${gIsa}` : ''}${gAt ? `<div class="gh" style="margin:0 16px 6px">On a date</div>${atChips}${gAt}` : ''}${gLine}
       ${show.length ? '' : '<p class="note">No charts chosen. Tap Charts to pick some.</p>'}
       <section class="card"><div class="gh">Key dates<b>differences against ${esc(P[0].name)}</b></div><div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${P.map(u => `<th>${esc(u.name)}</th>`).join('')}</tr></thead><tbody>${table}</tbody></table></div></section>
       <p class="note">Each plan is run on its own through the whole projection. Projections, not advice.</p>`,
@@ -1919,6 +1935,28 @@ function vPlans() {
   };
 }
 // ---- the "on a date" and timeline charts: plain HTML bars, so they read at any width ----
+// ISA allowance per tax year, each plan side by side: the column is the allowance, filled by what the plan uses,
+// with what it would lose hatched above.
+function isaCmpYears(X) {
+  const years = (X.plans[0].isa || { years: [] }).years;
+  if (!years.length) return '<p class="note">Add your balances first.</p>';
+  return `<div class="ybars cmpy">${years.map((y, yi) => `<div class="ycol"><div class="ygrp">${X.plans.map((u, i) => { const Y = u.isa && u.isa.years[yi]; if (!Y) return ''; const a = Y.allowance || 1, h = v => (Math.max(0, v) / a * 100).toFixed(2);
+      return `<div class="ystack" title="${esc(u.name)} ${esc(Y.label)}: ${money(Y.used)} used${Y.unused > 0.5 ? `, ${money(Y.unused)} unused` : ''}"><i class="y-un" style="height:${h(Y.unused)}%"></i><i style="height:${h(Y.used)}%;background:${SC_COLORS[i]}"></i></div>`; }).join('')}</div>
+      <div class="yl">${esc(y.label)}</div></div>`).join('')}</div>
+    <div class="legend">${X.plans.map((u, i) => `<span><i class="sq" style="background:${SC_COLORS[i]}"></i>${esc(u.name)}</span>`).join('')}<span><i class="sq y-un"></i>Would go unused</span></div>`;
+}
+// The review: per tax year, what each plan uses and loses, the best marked; then the total lost.
+function isaCmpReview(X) {
+  const years = (X.plans[0].isa || { years: [] }).years; if (!years.length) return '';
+  const cell = (vals, yi, f, low) => { const v = vals.map(f), b = low ? Math.min(...v) : Math.max(...v), tie = v.every(x => Math.abs(x - b) < 0.5); return v.map(x => `<td class="${!tie && Math.abs(x - b) < 0.5 ? 'best' : ''}"><span class="amt">${short(x)}</span></td>`).join(''); };
+  const rows = years.map((y, yi) => { const Ys = X.plans.map(u => (u.isa && u.isa.years[yi]) || { used: 0, unused: 0 });
+    return `<tr class="sec"><th colspan="${X.plans.length + 1}">${esc(y.label)}${y.partial ? ' (from now)' : ''} · <span class="amt">${short(y.allowance)}</span> allowance</th></tr>
+      <tr><th>Used</th>${cell(Ys, yi, Y => Y.used, false)}</tr><tr><th>Lost</th>${cell(Ys, yi, Y => Y.unused, true)}</tr>`; }).join('');
+  const tot = X.plans.map(u => (u.isa ? u.isa.lost : 0)), b = Math.min(...tot), tie = tot.every(x => Math.abs(x - b) < 0.5);
+  return `<div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${X.plans.map(u => `<th>${esc(u.name)}</th>`).join('')}</tr></thead><tbody>${rows}
+    <tr class="sec"><th colspan="${X.plans.length + 1}">Over all ${years.length} tax years</th></tr><tr><th>Lost</th>${tot.map(x => `<td class="${!tie && Math.abs(x - b) < 0.5 ? 'best' : ''}"><b class="amt ${x > 0.5 && (tie || Math.abs(x - b) >= 0.5) ? 'neg' : ''}">${short(x)}</b></td>`).join('')}</tr></tbody></table></div>
+    <p class="cnote">Highlighted: the best plan for that line. Unused allowance can’t be carried into the next tax year. Open a plan’s ISA allowance screen for the month-by-month view.</p>`;
+}
 function mixHTML(X) {
   const pos = m => Math.max(0, m.cash) + Math.max(0, m.cashIsa) + Math.max(0, m.ss) + Math.max(0, m.other);
   const neg = m => Math.max(0, -m.mortgage) + Math.max(0, -m.other) + Math.max(0, -m.cash);
@@ -1941,7 +1979,7 @@ function whyHTML(X) {
 function scoreHTML(X) {
   return `<div class="score">${X.score.map(m => { const M = Math.max(1, ...m.vals.map(Math.abs));
     return `<div class="sq-m"><div class="sq-l">${esc(m.label)}<span>${m.tie ? 'the same in every plan' : m.better === 'high' ? 'higher is better' : 'lower is better'}</span></div>${m.vals.map((v, i) => `<div class="sq-r${m.best[i] ? ' best' : ''}"><span class="dotc" style="background:${SC_COLORS[i]}"></span><div class="sq-t"><i style="width:${Math.abs(v) / M * 100}%;background:${SC_COLORS[i]}"></i></div><span class="amt">${m.count ? v : money(v)}</span>${m.best[i] ? '<em>best</em>' : ''}</div>`).join('')}</div>`; }).join('')}</div>
-    <p class="cnote">Lowest cash and months below the floor are over the whole period; the rest on the date chosen.</p>`;
+    <p class="cnote">Lowest cash, months below the floor and ISA allowance lost are over the whole period; the rest on the date chosen.</p>`;
 }
 function tightHTML(X) {
   const years = X.plans[0].rows.map((r, i) => (r.date.slice(5, 7) === '01' ? `<span style="left:${i / X.n * 100}%">${r.date.slice(0, 4)}</span>` : '')).join('');

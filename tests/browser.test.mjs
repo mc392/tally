@@ -330,6 +330,10 @@ try {
   await page.evaluate(k => { try { localStorage.removeItem('tally-cmp-charts'); } catch (e) { } actions['cmp-with'](k); }, nk);
   await page.waitForSelector('#c-pl-net');
   ok(await page.evaluate(() => ['c-pl-net', 'c-pl-diff', 'c-pl-pay', 'c-pl-cash', 'c-pl-left'].every(id => document.getElementById(id)) && document.querySelector('#main .hbars') && document.querySelector('#main .score')), 'the default charts: over time, where the money is, why they differ, the scorecard');
+  // someone who chose their charts before the ISA ones existed still gets the ISA ones the defaults include
+  await page.evaluate(() => { localStorage.setItem('tally-cmp-charts', JSON.stringify(['net', 'diff'])); render(); });
+  ok(await page.evaluate(() => !!document.querySelector('#main .ybars.cmpy') && !!document.querySelector('#main .cmpwrap table.cmp th') && !document.getElementById('c-pl-pay')), 'a chart choice saved before the ISA charts existed: theirs, plus the ISA allowance charts');
+  await page.evaluate(() => { localStorage.removeItem('tally-cmp-charts'); render(); });
   await page.click('#main [data-act="cmp-charts"]');
   await page.waitForSelector('.sheet-wrap.open #f_interest');
   await page.click('.sheet-wrap.open #f_interest'); await page.click('.sheet-wrap.open #f_marks');
@@ -691,6 +695,8 @@ try {
   const tk = await touch.evaluate(() => { const k = Object.keys(data.scenarios)[0]; actions.push('scenario:' + k); return k; });
   {
     await touch.waitForSelector(`#main [data-chg="sc-growth"]`);
+    // the page slides in and its cards rise: measure where the switch is once it has stopped moving
+    await touch.waitForFunction(() => document.getAnimations().every(x => x.playState !== 'running'), null, { timeout: 5000 });
     const g0 = await touch.evaluate(k => data.scenarios[k].growth, tk);
     const box = await (await touch.$(`#main [data-chg="sc-growth"]`)).evaluate(el => { const r = el.closest('.switch').getBoundingClientRect(); return { x: r.right - 6, y: r.top + r.height / 2 }; });
     await touch.touchscreen.tap(box.x, box.y);

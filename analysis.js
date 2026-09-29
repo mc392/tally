@@ -317,7 +317,16 @@ const TallyAnalysis = (() => {
         for (const e of x.events || []) marks.push({ i, date: x.date, kind: 'oneoff', name: e.name, amount: +e.amount || 0 });
         if (i && Math.abs((x.mortgagePay || 0) - (rows[i - 1].mortgagePay || 0)) > 1) marks.push({ i, date: x.date, kind: 'mortgage', name: 'Mortgage payment changes', amount: (x.mortgagePay || 0) - (rows[i - 1].mortgagePay || 0) });
       });
-      return { k, name: sc.name, rows, s, below, low, marks, fixEndK: pr.fixEndK };
+      // ISA allowance over the same span: tax year by tax year, and a running total of allowance used against the
+      // allowance there was, month by month (both from isaTimeline, so the two screens can never disagree)
+      const isa = isaTimeline(data, k, Math.max(1, Math.ceil((months + 3) / 12)));
+      const isaUsed = [], isaAvail = []; if (isa) {
+        let doneUsed = 0, doneAvail = 0; const at = {};
+        for (const y of isa.years) { for (const m of y.months) at[m.date] = [doneUsed + m.cumulative, doneAvail + y.allowance]; doneUsed += y.used; doneAvail += y.allowance; }
+        let last = [0, 0]; for (const x of rows) { last = at[x.date] || last; isaUsed.push(last[0]); isaAvail.push(last[1]); }
+      }
+      s.isaUsed = isaUsed; s.isaAvail = isaAvail;
+      return { k, name: sc.name, rows, s, below, low, marks, fixEndK: pr.fixEndK, isa };
     });
     const n = plans[0] ? plans[0].rows.length : 0, j = at == null ? n - 1 : Math.min(n - 1, Math.max(0, at));
     // at a date: what each plan holds, and each part of the difference from the first plan
@@ -331,6 +340,7 @@ const TallyAnalysis = (() => {
       { key: 'low', label: 'Lowest cash', better: 'high', vals: plans.map(P => P.low.v) },
       { key: 'below', label: 'Months below the cash floor', better: 'low', vals: plans.map(P => P.below), count: true },
       { key: 'interest', label: 'Mortgage interest paid', better: 'low', vals: plans.map(P => P.s.interest[j]) },
+      { key: 'isaLost', label: 'ISA allowance lost', better: 'low', whole: true, vals: plans.map(P => (P.isa ? P.isa.lost : 0)) },
       ...(F >= 0 ? [{ key: 'avail', label: 'Free to overpay at the fix end', better: 'high', vals: plans.map(P => P.s.avail[F]) }] : []),
     ].map(m => { const best = m.better === 'high' ? Math.max(...m.vals) : Math.min(...m.vals), tie = m.vals.every(v => Math.abs(v - best) < 0.5); return { ...m, tie, best: m.vals.map(v => !tie && Math.abs(v - best) < 0.5) }; });
     return { plans, n, at: j, date: n ? plans[0].rows[j].date : null, floor, mix, why, score };
