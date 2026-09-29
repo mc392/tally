@@ -65,6 +65,9 @@ try {
   ok(await page.evaluate(() => document.body.classList.contains('private')), 'figures start hidden');
   await page.click('[data-act="private"]');
   ok(await page.evaluate(() => !document.body.classList.contains('private')), 'the eye shows them');
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true }); document.dispatchEvent(new Event('visibilitychange')); delete document.visibilityState; });
+  ok(await page.evaluate(() => document.body.classList.contains('private') && document.querySelector('[data-act="private"]').getAttribute('aria-label') === 'Show amounts'), 'going to the background hides them again');
+  await page.click('[data-act="private"]');
 
   console.log('Live save');
   await page.evaluate(() => { data.bufferPct = 7; changed(); });
@@ -285,21 +288,60 @@ try {
   ok(cmpText.includes(payShown), 'the payment on screen is the engine’s');
   await page.click('#tabbar [data-arg="plan"]'); await page.click('#tabbar [data-arg="plan"]');
   await page.click('#main [data-act="push"][data-arg="scenario:base"]');
-  await page.click('#main [data-act="edit-scplan"]');
-  await page.waitForSelector('.sheet-wrap.open #f_option');
+  // the mortgage path for this plan: take the first saved deal
+  const pid = await page.evaluate(() => mortgageParts(data)[0].id);
+  await page.click(`#main [data-act="sc-mort"][data-arg="base|${pid}"]`);
+  await page.waitForSelector('.sheet-wrap.open #f_path');
+  await page.selectOption('.sheet-wrap.open #f_path', 'deal');
+  ok(await page.$eval('.sheet-wrap.open #f_rate', el => el.closest('[data-show]').hidden), 'the fixed-rate box hides unless fixing again');
   await page.selectOption('.sheet-wrap.open #f_option', await page.evaluate(() => data.remortgageOptions[0].id));
-  await page.selectOption('.sheet-wrap.open #f_b_' + await page.evaluate(() => data.bundles[0].id), 'off');
   await page.click('.sheet-wrap.open .done');
-  await page.waitForFunction(() => data.scenarios.base.option);
-  ok(await page.evaluate(() => data.scenarios.base.bundles[data.bundles[0].id] === false && data.bundles[0].on === true), 'the Base plan takes the deal and leaves the baby out, without switching the event off elsewhere');
-  await page.click('#tabbar [data-arg="projection"]');
-  await page.click('#main [data-act="push"][data-arg="plans"]');
+  await page.waitForFunction(p => data.scenarios.base.mortgage[p]?.path === 'deal', pid);
+  // a life event off in this plan only
+  const bid = await page.evaluate(() => data.bundles[0].id);
+  await page.click(`#main [data-chg="sc-bundle"][data-arg="base|${bid}"]`);
+  await page.waitForFunction(b => data.scenarios.base.bundles[b] === false, bid);
+  ok(await page.evaluate(() => data.bundles[0].on === true), 'the Base plan takes the deal and leaves the baby out, without switching the event off elsewhere');
+  // a copy of the plan that fixes again at 4% for two years and adds nursery fees of its own
+  await page.click('#main [data-act="copy-plan"][data-arg="base"]');
+  await page.waitForSelector('.sheet-wrap.open #f_name');
+  await page.fill('.sheet-wrap.open #f_name', 'Fix and nursery');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => Object.values(data.scenarios).some(s => s.name === 'Fix and nursery'));
+  const nk = await page.evaluate(() => Object.keys(data.scenarios).find(k => data.scenarios[k].name === 'Fix and nursery'));
+  await page.waitForFunction(k => document.querySelector(`#main [data-act="sc-mort"][data-arg^="${k}|"]`), nk);
+  await page.click(`#main [data-act="sc-mort"][data-arg="${nk}|${pid}"]`);
+  await page.waitForSelector('.sheet-wrap.open #f_path');
+  await page.selectOption('.sheet-wrap.open #f_path', 'fix'); await page.fill('.sheet-wrap.open #f_rate', '4'); await page.fill('.sheet-wrap.open #f_years', '2');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(([k, p]) => data.scenarios[k].mortgage[p]?.path === 'fix', [nk, pid]);
+  await page.waitForTimeout(400);
+  await page.click(`#main [data-act="sc-line-add"][data-arg="${nk}"]`);
+  await page.waitForSelector('.sheet-wrap.open #f_name');
+  await page.fill('.sheet-wrap.open #f_name', 'Plan-only fees'); await page.fill('.sheet-wrap.open #f_amount', '900');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(() => data.flows.some(f => f.name === 'Plan-only fees'));
+  ok(await page.evaluate(k => { const f = data.flows.find(x => x.name === 'Plan-only fees'); return f.on === false && data.scenarios[k].lines[f.id].on === true && !data.scenarios.base.lines[f.id]; }, nk), 'a line added only to the copy');
+  ok(await page.evaluate(k => { const m = thisMonth(); return monthlyBudget(data, m).spend === monthlyBudget(data, m).spend && project(data, k, 3).rows[1].spend - project(data, 'base', 3).rows[1].spend > 899; }, nk), 'the copy spends £900 a month more; the base plan is unchanged');
+  await page.waitForTimeout(400);
+  // compare the two: the gallery, and choosing another chart
+  await page.evaluate(k => { try { localStorage.removeItem('tally-cmp-charts'); } catch (e) { } actions['cmp-with'](k); }, nk);
   await page.waitForSelector('#c-pl-net');
-  const plansText = await page.textContent('#main');
-  ok(plansText.includes('Key dates') && plansText.includes('At the fix end') && plansText.includes('Available to overpay'), 'plans overlaid, with a difference table at key dates');
-  ok(await page.evaluate(() => { const H = Math.max(horizon(), 60); const a = project(data, 'base', H).rows.at(-1).net; return document.querySelector('#main').textContent.includes('Base') && Number.isFinite(a); }), 'each plan runs as its own scenario');
+  ok(await page.evaluate(() => ['c-pl-net', 'c-pl-diff', 'c-pl-pay', 'c-pl-cash', 'c-pl-left'].every(id => document.getElementById(id)) && document.querySelector('#main .hbars') && document.querySelector('#main .score')), 'the default charts: over time, where the money is, why they differ, the scorecard');
+  await page.click('#main [data-act="cmp-charts"]');
+  await page.waitForSelector('.sheet-wrap.open #f_interest');
+  await page.click('.sheet-wrap.open #f_interest'); await page.click('.sheet-wrap.open #f_marks');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForSelector('#c-pl-int');
+  ok(await page.evaluate(() => !!document.querySelector('#main .track')), 'more charts chosen: interest, and what happens when');
+  ok(await page.evaluate(k => { const X = TallyAnalysis.comparePlans(data, ['base', k], 60); return X.score.find(m => m.key === 'interest').vals.every(Number.isFinite); }, nk), 'the scorecard is worked out for both plans');
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
   await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-plans.png'), fullPage: true });
+  // deleting the copy takes its own line with it
+  await page.evaluate(k => { window.confirm = () => true; actions['del-plan'](k); }, nk);
+  await page.waitForFunction(k => !data.scenarios[k], nk);
+  ok(await page.evaluate(() => !data.flows.some(f => f.name === 'Plan-only fees')), 'deleting a plan removes the lines only it had');
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
   console.log('Cash-flow calendar and plan vs actual');
   await page.click('#tabbar [data-arg="plan"]'); await page.click('#tabbar [data-arg="plan"]');
@@ -541,9 +583,9 @@ try {
   ok(await page.evaluate(() => !meta.dirty && acc('sav').rateModel.kind === 'variable') && (await disk()).format === 'tally-encrypted', 'saved into the (encrypted) file');
   const fixK = await page.evaluate(() => ymKeyOf(data.mortgage.parts[0].fixEnd));
   // an earlier check chose a remortgage deal in this scenario, and a chosen deal takes over at the fix end: look without it
-  ok(await page.evaluate(k => { const r = projectAs(data, scenarioKey(), { option: null }, 60).rows.find(x => x.k === k); return r.mortgageParts[0].repriced && Math.abs(r.mortgageParts[0].rate - 5) > 1e-6; }, fixK), 'the mortgage moves off its fixed rate onto a variable rate following the curve');
-  ok(await page.evaluate(k => { const r = project(data, scenarioKey(), 60).rows.find(x => x.k === k); return r.mortgageParts[0].why === null && r.mortgageParts[0].rate === +data.remortgageOptions.find(o => o.id === data.scenarios[scenarioKey()].option).rate; }, fixK), 'a deal chosen in the plan wins over the market path');
-  const optWas = await page.evaluate(() => { const o = data.scenarios[scenarioKey()].option; data.scenarios[scenarioKey()].option = null; changed(); return o; });
+  ok(await page.evaluate(k => { const r = projectAs(data, scenarioKey(), { option: null, mortgage: {} }, 60).rows.find(x => x.k === k); return r.mortgageParts[0].repriced && Math.abs(r.mortgageParts[0].rate - 5) > 1e-6; }, fixK), 'the mortgage moves off its fixed rate onto a variable rate following the curve');
+  ok(await page.evaluate(k => { const r = project(data, scenarioKey(), 60).rows.find(x => x.k === k); return r.mortgageParts[0].why === null && r.mortgageParts[0].rate === +data.remortgageOptions.find(o => o.id === Object.values(data.scenarios[scenarioKey()].mortgage)[0].option).rate; }, fixK), 'a deal chosen in the plan wins over the market path');
+  const optWas = await page.evaluate(() => { const o = data.scenarios[scenarioKey()].mortgage; data.scenarios[scenarioKey()].mortgage = {}; changed(); return o; });
   await page.evaluate(k => actions.push('month:' + k), fixK);
   await page.waitForSelector('#main [data-act="why"]');
   ok((await page.textContent('#main')).includes('Repriced'), 'the month detail marks the repricing');
@@ -583,7 +625,7 @@ try {
   await page.waitForTimeout(300); await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-rates.png'), fullPage: true });
   await page.evaluate(() => { data.scenarios[scenarioKey()].rates = { kind: 'flat' }; changed(); });
   ok(await page.evaluate(k => project(data, scenarioKey(), 60).rows.find(x => x.k === k).mortgageParts[0].rate === 5, fixK), '“Flat” puts the mortgage back on its entered rate after the fix');
-  await page.evaluate(o => { data.scenarios[scenarioKey()].rates = { kind: 'market' }; data.scenarios[scenarioKey()].option = o; for (const a of data.accounts) delete a.rateModel; for (const p of data.mortgage.parts) delete p.rateModel; changed(); }, optWas);
+  await page.evaluate(o => { data.scenarios[scenarioKey()].rates = { kind: 'market' }; data.scenarios[scenarioKey()].mortgage = o; for (const a of data.accounts) delete a.rateModel; for (const p of data.mortgage.parts) delete p.rateModel; changed(); }, optWas);
   await waitSaved();
 
   console.log('Newer files');

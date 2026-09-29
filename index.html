@@ -174,6 +174,47 @@ button.row:active, .row.tap:active{background:var(--cell-hi)}
 .legend{display:flex; gap:14px; font-size:12px; color:var(--label2); margin-top:10px; flex-wrap:wrap}
 .legend span{display:flex; align-items:center; gap:5px}
 .legend i{width:14px; height:2px; border-radius:1px; display:inline-block}
+.chips.small{margin-top:-8px}
+.chips.small button{font-size:14px; padding:5px 12px}
+.cnote{font-size:12px; color:var(--label2); margin:8px 0 0; line-height:1.35}
+.dotc{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; flex:none; vertical-align:1px}
+.hl{display:flex; align-items:center; font-size:14px; font-weight:600; margin:10px 0 5px}
+.hl > span:last-child{margin-left:auto; font-weight:600; font-variant-numeric:tabular-nums}
+.hl > .dotc + *{}
+.ht{position:relative; height:16px; background:var(--fill); border-radius:4px}
+.ht i{position:absolute; top:0; bottom:0; border-right:2px solid var(--cell)}
+.ht i:first-of-type{border-radius:4px 0 0 4px}
+.ht b{position:absolute; top:-4px; bottom:-4px; width:2px; margin-left:-1px; background:var(--label); z-index:1}
+.whyp{margin-bottom:12px}
+.dv{display:grid; grid-template-columns:minmax(0,1.1fr) 1.4fr auto; gap:8px; align-items:center; font-size:13px; color:var(--label2); margin:4px 0}
+.dv > .amt{min-width:78px; text-align:right; color:var(--label); font-variant-numeric:tabular-nums}
+.dt{position:relative; height:10px; background:var(--fill); border-radius:3px}
+.dt b{position:absolute; left:50%; top:-3px; bottom:-3px; width:1px; background:var(--label3)}
+.dt i{position:absolute; top:0; bottom:0; border-radius:3px}
+.dt i.p{background:var(--c-sav)} .dt i.n{background:var(--c-debt)}
+.score .sq-m{padding:8px 0; border-top:1px solid var(--sep)}
+.score .sq-m:first-child{border-top:0}
+.sq-l{font-size:14px; font-weight:600; margin-bottom:4px}
+.sq-l span{font-weight:400; font-size:12px; color:var(--label3); margin-left:6px}
+.sq-r{display:grid; grid-template-columns:auto 1fr 96px 34px; gap:6px; align-items:center; font-size:13px; margin:3px 0}
+.sq-r .amt{text-align:right; font-variant-numeric:tabular-nums}
+.sq-r.best .amt{font-weight:700}
+.sq-r em{font-style:normal; font-size:11px; color:var(--green); font-weight:600}
+.sq-t{height:8px; background:var(--fill); border-radius:3px; overflow:hidden}
+.sq-t i{display:block; height:100%; border-radius:3px}
+.tl{margin-bottom:6px}
+.cells{display:flex; gap:1px; height:18px}
+.cells i{flex:1; border-radius:2px; min-width:1px}
+.cells i.lo, .tl-lo{background:var(--red)} .cells i.near, .tl-near{background:var(--orange)} .cells i.ok, .tl-ok{background:color-mix(in srgb,var(--c-sav) 35%,var(--fill))}
+.yrs{position:relative; height:16px; font-size:11px; color:var(--label3); margin-top:2px}
+.yrs span{position:absolute; transform:translateX(-50%)}
+.track{position:relative; height:18px; background:var(--fill); border-radius:9px}
+.track i{position:absolute; top:4px; width:10px; height:10px; margin-left:-5px; border-radius:50%; border:1.5px solid var(--cell)}
+.track i.mk-m, i.sq.mk-m{border-radius:2px; transform:rotate(45deg)}
+.mk-out{background:var(--c-debt)} .mk-in{background:var(--c-sav)} .mk-m{background:var(--c-isa)}
+.mklist{display:flex; flex-wrap:wrap; gap:2px 12px; font-size:12px; color:var(--label2); margin-top:5px}
+.mklist b{font-weight:600; color:var(--label)}
+.private .hl .amt, .private .dv .amt, .private .sq-r .amt{filter:blur(8px)}
 .legend i.sq{width:9px; height:9px; border-radius:2px}
 .legend i.dash{background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 7px)!important}
 

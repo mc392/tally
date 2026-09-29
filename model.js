@@ -72,11 +72,16 @@
 //              With one, the projection follows the scenario's rate path; without, the item keeps its own entered
 //              rates exactly as before. The current rate is still the account's `rates` (or the part's `rate`), a
 //              fixed account's fix end its `maturity` (the part's `fixEnd`), and a part's rate after the fix `newRate`.
+//   scenarios[k].lines (v12) - {flowId: {on?, amount?, start?, end?}}: this plan's own version of a line - switched on
+//              or off, a different monthly amount (a one-off: its total), different months. Absent = as the line is set.
+//              A line added "only in this plan" is saved switched off with this plan switching it on.
+//   scenarios[k].mortgage (v12) - {partId: {path:'as'|'float'|'fix'|'deal', rate?, years?, option?}}: what this plan
+//              does with each part at its fix end. v11's single scenarios[k].option moves here on upgrade.
 //   scenarios[k].rates - {kind:'market'|'shift'|'twist'|'flat'|'anchor'|'manual'|'history', ...its settings}.
 //   rateBasis - {source, asOf, curve, previous?}: the Bank of England curve this file's projections use, kept in the
 //              file so any projection can be re-run offline and "as at" the curve it was made with. Public data.
 const TallyModel = (() => {
-  const VERSION = 11;
+  const VERSION = 12;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -152,7 +157,12 @@ const TallyModel = (() => {
     d.goals ||= [];
     d.reviews ||= {};
     d.transactions ||= []; d.imports ||= []; d.categoryRules ||= []; d.categoryMap ||= {};
-    for (const k in d.scenarios || {}) { const sc = d.scenarios[k]; sc.option ??= null; sc.bundles ||= {}; sc.rateShift ??= 0; sc.rates ||= { kind: 'market' }; }
+    for (const k in d.scenarios || {}) {
+      const sc = d.scenarios[k]; sc.option ??= null; sc.bundles ||= {}; sc.rateShift ??= 0; sc.rates ||= { kind: 'market' }; sc.lines ||= {}; sc.mortgage ||= {};
+      // v12: the single remortgage choice becomes that part's path in the plan (same projection, to the penny)
+      const o = sc.option && (d.remortgageOptions || []).find(x => x.id === sc.option);
+      if (o && !sc.mortgage[o.partId]) { sc.mortgage[o.partId] = { path: 'deal', option: o.id }; sc.option = null; }
+    }
     d.rateBasis ??= null;
     for (const b of d.bundles) { b.on ??= true; b.scale ??= 1; b.contingency ??= 0; }
     for (const f of d.flows) { f.start ??= null; f.end ??= null; f.bundle ??= null; f.on ??= true; f.inflates ??= false; f.growth ??= 0; }
@@ -184,19 +194,31 @@ const TallyModel = (() => {
   // scale and contingency applied. Flows not in an event (or in one that no longer exists) pass through.
   // A scenario (optional) can switch an event on or off for itself; otherwise the event's own switch decides.
   const bundleOn = (b, sc) => (sc && sc.bundles && sc.bundles[b.id] != null ? !!sc.bundles[b.id] : b.on !== false);
+  // This plan's own version of a line (v12): on or off, a different amount, different months. Applied last, so an
+  // amount set in the plan is the amount - a life event's scale and contingency do not go on top of it.
+  const lineOf = (f, sc) => (sc && sc.lines && sc.lines[f.id]) || null;
+  const planLine = (f, L) => {
+    if (!L) return f;
+    const g = { ...f };
+    if (L.on != null) g.on = !!L.on;
+    if (L.amount != null && L.amount !== '') g.amount = +L.amount;
+    if (L.start !== undefined) g.start = L.start;
+    if (L.end !== undefined) g.end = L.end;
+    return g;
+  };
   function effectiveFlows(d, sc) {
     const by = Object.fromEntries((d.bundles || []).map(b => [b.id, b]));
     const out = [];
     for (const f of d.flows || []) {
-      const b = f.bundle && by[f.bundle];
-      if (!b) { out.push(f); continue; }
+      const b = f.bundle && by[f.bundle], L = lineOf(f, sc);
+      if (!b) { out.push(planLine(f, L)); continue; }
       if (!bundleOn(b, sc)) continue;
       const cost = f.kind === 'spend' || (f.kind === 'oneoff' && f.amount < 0);
       const k = (+b.scale || 0) * (cost ? 1 + (+b.contingency || 0) / 100 : 1);
-      if (k === 1) { out.push(f); continue; }
+      if (k === 1) { out.push(planLine(f, L)); continue; }
       const g = { ...f, amount: (+f.amount || 0) * k };
       if (f.overrides) g.overrides = Object.fromEntries(Object.entries(f.overrides).map(([m, v]) => [m, (+v || 0) * k]));
-      out.push(g);
+      out.push(planLine(g, L));
     }
     return out;
   }

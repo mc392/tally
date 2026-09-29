@@ -135,7 +135,7 @@ console.log('  ✓ pensions: locked, growing, counted');
 const v10 = { ...base(), version: 10 }; v10.scenarios.s.growth = true;
 const flatRows = project(TM.migrate({ ...v10, version: 11, rateBasis: null, scenarios: { s: { ...v10.scenarios.s, rates: { kind: 'flat' } } } }), 's', 36).rows;
 const m11 = TM.migrate(v10);
-assert.strictEqual(m11.version, 11);
+assert.strictEqual(m11.version, TM.VERSION);
 assert.deepStrictEqual(m11.scenarios.s.rates, { kind: 'market' }, 'each scenario follows the market curve by default');
 assert.strictEqual(m11.rateBasis, null, 'no curve until one is chosen');
 assert.ok(m11.accounts.every(a => !('rateModel' in a)), 'no account is moved onto market rates by the upgrade');

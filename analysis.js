@@ -6,8 +6,9 @@
 //   attribution     - where a change in net worth came from, and returns (3.1)
 //   stressed        - one-tap shocks (4.2)
 //   monteCarlo      - a range of outcomes (4.1), seeded so it can be tested and repeated
+//   comparePlans    - plans run side by side, and every figure the comparison charts draw (Sep 2026)
 const TallyAnalysis = (() => {
-  const E = typeof project !== 'undefined' ? { project, latestSnapshot, snapshotTotals, readiness, mortgageParts, positionOn, observations, balanceOn } : require('./engine.js');
+  const E = typeof project !== 'undefined' ? { project, latestSnapshot, snapshotTotals, readiness, mortgageParts, positionOn, observations, balanceOn, availableSeries } : require('./engine.js');
   const M = typeof TallyModel !== 'undefined' ? TallyModel : require('./model.js');
   const LIAB = new Set(['card_0', 'tax']); // everyday credit cards sit with cash, as in the projection
   const INVEST = new Set(['ss_isa', 'pension']);
@@ -230,7 +231,53 @@ const TallyAnalysis = (() => {
     return out.sort((x, y) => y.to.localeCompare(x.to));
   }
 
-  return { checks, realValue, isaYear, goalStatus, goalValueAt, attribution, STRESSES, stressed, monteCarlo, rng, normals };
+  // ---------- comparing plans (Sep 2026) ----------
+  // Each plan run on its own over `months`, and the figures the comparison charts draw, so the screen only draws.
+  // at: the row index the "at a date" charts read. All money is month-end; interest is a running total from the start.
+  function comparePlans(data, keys, months, at = null) {
+    const r = data.rules || {}, floor = +r.cashFloor || 0, em = +((r.remortgage || {}).earmarkMonths) || 12, home = +((data.mortgage || {}).propertyValue) || 0;
+    const plans = keys.map(k => {
+      const sc = data.scenarios[k], pr = E.project(data, k, months + em), rows = pr.rows.slice(0, months);
+      const av = E.availableSeries(pr.rows, floor, em).slice(0, months), k0 = rows.length ? rows[0].k : 0;
+      let int = 0, below = 0, low = { v: Infinity, date: null };
+      const s = { head: [], thin: [], net: [], cash: [], isa: [], ss: [], cashIsa: [], other: [], mortgage: [], pay: [], interest: [], left: [], spend: [], income: [], real: [], clear: [], avail: av };
+      for (const x of rows) {
+        const mb = x.mortgageBal || 0; int += x.mortgageInterest || 0;
+        s.net.push(x.net); s.cash.push(x.closing); s.isa.push(x.isa); s.ss.push(x.isaSS); s.cashIsa.push(x.isaCash); s.other.push(x.other);
+        s.mortgage.push(mb); s.pay.push(x.mortgagePay || 0); s.interest.push(int); s.left.push(x.surplus); s.spend.push(x.spend); s.income.push(x.income);
+        s.real.push(realValue(x.net, x.k, k0, sc.inflation)); s.clear.push(x.net - mb + home);
+        // headroom: money you could reach within days (cash and instant-access cash ISAs) above the floor; thin when it
+        // is under three months of that month's spending. The projection holds cash at the floor, so cash alone says nothing.
+        s.head.push(x.closing + (x.isaCashFlex || 0) - floor); s.thin.push(3 * (x.spend || 0));
+        if (x.closing < floor - 0.5) below++;
+        if (x.closing < low.v) low = { v: x.closing, date: x.date };
+      }
+      // the moments worth marking: one-offs, and each month a mortgage payment changes by more than £1
+      const marks = [];
+      rows.forEach((x, i) => {
+        for (const e of x.events || []) marks.push({ i, date: x.date, kind: 'oneoff', name: e.name, amount: +e.amount || 0 });
+        if (i && Math.abs((x.mortgagePay || 0) - (rows[i - 1].mortgagePay || 0)) > 1) marks.push({ i, date: x.date, kind: 'mortgage', name: 'Mortgage payment changes', amount: (x.mortgagePay || 0) - (rows[i - 1].mortgagePay || 0) });
+      });
+      return { k, name: sc.name, rows, s, below, low, marks, fixEndK: pr.fixEndK };
+    });
+    const n = plans[0] ? plans[0].rows.length : 0, j = at == null ? n - 1 : Math.min(n - 1, Math.max(0, at));
+    // at a date: what each plan holds, and each part of the difference from the first plan
+    const mix = plans.map(P => ({ cash: P.s.cash[j], cashIsa: P.s.cashIsa[j], ss: P.s.ss[j], other: P.s.other[j], mortgage: -P.s.mortgage[j] }));
+    const why = plans.slice(1).map((P, i) => { const a = mix[0], b = mix[i + 1]; const d = {}; for (const c in a) d[c] = b[c] - a[c]; d.total = Object.values(d).reduce((x, y) => x + y, 0); return d; });
+    // the scorecard: one figure per plan per question, and which way is better
+    const F = plans[0] && plans[0].fixEndK != null ? plans[0].rows.findIndex(x => x.k === plans[0].fixEndK - 1) : -1;
+    const score = [
+      { key: 'net', label: 'Net worth', better: 'high', vals: plans.map(P => P.s.net[j]) },
+      { key: 'clear', label: home ? 'Net worth with your home' : 'Net worth less the mortgage', better: 'high', vals: plans.map(P => P.s.clear[j]) },
+      { key: 'low', label: 'Lowest cash', better: 'high', vals: plans.map(P => P.low.v) },
+      { key: 'below', label: 'Months below the cash floor', better: 'low', vals: plans.map(P => P.below), count: true },
+      { key: 'interest', label: 'Mortgage interest paid', better: 'low', vals: plans.map(P => P.s.interest[j]) },
+      ...(F >= 0 ? [{ key: 'avail', label: 'Free to overpay at the fix end', better: 'high', vals: plans.map(P => P.s.avail[F]) }] : []),
+    ].map(m => { const best = m.better === 'high' ? Math.max(...m.vals) : Math.min(...m.vals), tie = m.vals.every(v => Math.abs(v - best) < 0.5); return { ...m, tie, best: m.vals.map(v => !tie && Math.abs(v - best) < 0.5) }; });
+    return { plans, n, at: j, date: n ? plans[0].rows[j].date : null, floor, mix, why, score };
+  }
+
+  return { comparePlans, checks, realValue, isaYear, goalStatus, goalValueAt, attribution, STRESSES, stressed, monteCarlo, rng, normals };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyAnalysis;

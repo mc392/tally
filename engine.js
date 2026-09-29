@@ -196,6 +196,14 @@ function project(data, scenarioKey, months, opts = {}) {
   // everything else keeps its own entered rates, exactly as before. RL.active is false for "flat" and when no
   // curve is to hand, and then nothing below changes.
   const RL = EC.forScenario(data, sc);
+  // What this plan does with each mortgage part when its fix ends (v12): sc.mortgage[partId] =
+  //   {path:'as'}    as the part is set (its rate after the fix, or its market rule)
+  //   {path:'float'} onto the lender's variable rate and stay there (a market-rate part rolls onto its variable rule)
+  //   {path:'fix', rate, years} a new fix at that rate, then the part's rate after a fix; with no rate, priced from the market
+  //   {path:'deal', option} one of your remortgage options for the part
+  // sc.option - the older single choice, and how Compare deals tries one - applies to its part unless the plan says otherwise.
+  const legacyOpt = sc.option ? (data.remortgageOptions || []).find(o => o.id === sc.option) : null;
+  const pathOf = id => { const m = (sc.mortgage || {})[id]; if (m && m.path && m.path !== 'as') return m; return legacyOpt && legacyOpt.partId === id ? { path: 'deal', option: legacyOpt.id } : { path: 'as' }; };
   const paths = {}, partPaths = {};
   if (RL.active) {
     for (const a of accs) if (a.rateModel && INTEREST_TYPES.has(a.type)) {
@@ -208,8 +216,10 @@ function project(data, scenarioKey, months, opts = {}) {
       }, RL, k0, months);
     }
     for (const p of mortgageParts(data)) if (p.rateModel && isSet(p.rate)) {
+      const mp = pathOf(p.id), R0 = p.rateModel.rollover || {};
+      const rollover = mp.path === 'float' ? { ...R0, kind: 'variable' } : mp.path === 'fix' && !isSet(mp.rate) ? { ...R0, kind: 'refix', termMonths: Math.round((+mp.years || 2) * 12) } : R0;
       partPaths[p.id] = EC.path({
-        ...p.rateModel, category: 'mortgage', known: () => +p.rate, afterRate: isSet(p.newRate) ? +p.newRate : null, extra: +sc.rateShift || 0,
+        ...p.rateModel, rollover, category: 'mortgage', known: () => +p.rate, afterRate: isSet(p.newRate) ? +p.newRate : null, extra: +sc.rateShift || 0,
         fixEndI: p.rateModel.kind === 'fixed' && p.fixEnd ? EM.monthKey(EM.month(p.fixEnd)) - k0 : null,
       }, RL, k0, months);
     }
@@ -232,10 +242,14 @@ function project(data, scenarioKey, months, opts = {}) {
   }));
   const anyBal = parts.some(p => p.bal != null);
   // The scenario's chosen remortgage option (1.6), applied to its part from the part's fix end.
-  const opt = sc.option ? (data.remortgageOptions || []).find(o => o.id === sc.option) : null;
-  const optPart = opt ? parts.find(p => p.id === opt.partId && p.fixEndK != null && p.bal != null) : null;
-  const optK = optPart ? optPart.fixEndK : null;
   const shift = +sc.rateShift || 0;
+  // each part's deal from its fix end: a saved option, or a new fix entered on the plan (an option with no fee)
+  for (const p of parts) {
+    const mp = pathOf(p.id);
+    const o = mp.path === 'deal' ? (data.remortgageOptions || []).find(x => x.id === mp.option) : mp.path === 'fix' && isSet(mp.rate) ? { type: 'fixed', rate: +mp.rate, fixMonths: Math.round((+mp.years || 2) * 12), afterRate: p.newRate != null ? p.newRate - 0 : +mp.rate, fee: 0, lump: 0, regular: 0 } : null;
+    p.optAt = o && p.fixEndK != null && p.bal != null ? { opt: o, k: p.fixEndK } : null;
+    // floating with no market rule: the part simply stays on its rate after the fix - which is what "as set" does too
+  }
 
   // Remortgage planning (Phase 1.3). F = the month the earliest part's fix ends (from the start month on).
   // Glide path: in the N months before F, top-ups go only to instant-access cash ISAs, never S&S.
@@ -314,7 +328,8 @@ function project(data, scenarioKey, months, opts = {}) {
     let dealCash = 0; // money out of cash for the chosen option: a lump sum and fee at the switch, then overpayments
     const mParts = parts.map(p => {
       let interest = 0, paid = p.pay, over = 0;
-      if (p === optPart && k === optK) {
+      const opt = p.optAt && p.optAt.opt;
+      if (p.optAt && k === p.optAt.k) {
         const lump = Math.min(+opt.lump || 0, p.bal);
         p.bal = p.bal - lump + (opt.feeAdded ? +opt.fee || 0 : 0);
         dealCash += lump + (opt.feeAdded ? 0 : +opt.fee || 0);
@@ -327,7 +342,7 @@ function project(data, scenarioKey, months, opts = {}) {
         p.deal = { from: k, regular: +opt.regular || 0, capPct: capPctOf(opt), capLeft: 0 };
       }
       let rate = null, repriced = false;
-      const onPath = p.path && !(p === optPart && k >= optK) && p.bal != null;
+      const onPath = p.path && !(p.optAt && k >= p.optAt.k) && p.bal != null;
       if (onPath) {
         // market rates: this month's rate from the path; the payment is worked out again whenever it changes
         rate = p.path.rates[i];
@@ -519,7 +534,8 @@ function compareOptions(data, sk, windowMonths = 60, today) {
   const opts = [{ id: null, name: 'Do nothing', note: 'Move to the rate after your fix' }, ...(data.remortgageOptions || []).filter(o => o.partId === R.part.id)];
   let cashRateWin = null; // the cash ISA rate averaged over the window (on market rates it moves; flat, it is today's)
   const results = opts.map(o => {
-    const rows = projectAs(data, sk, { option: o.id }, months).rows;
+    // the part being compared takes exactly this option (or nothing); whatever the plan says about it is set aside
+    const rows = projectAs(data, sk, { option: o.id, mortgage: { ...((data.scenarios[sk || data.scenario] || {}).mortgage || {}), [R.part.id]: { path: 'as' } } }, months).rows;
     const win = rows.filter(r => r.k >= F && r.k < F + windowMonths), last = win.at(-1), part = r => r.mortgageParts[pi];
     if (!o.id) cashRateWin = win.reduce((s, r) => s + r.cashIsaRate, 0) / win.length;
     const interest = win.reduce((s, r) => s + part(r).interest, 0), overpaid = win.reduce((s, r) => s + part(r).over, 0);
