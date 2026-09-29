@@ -553,4 +553,41 @@ function availableSeries(rows, floor, em = 12) {
   return rows.map((r, i) => r.byAccess.instant + r.byAccess.notice - floor - rows.slice(i + 1, i + 1 + em).reduce((s, x) => s + x.earmark, 0));
 }
 
-if (typeof module !== 'undefined') module.exports = { marketFix, project, snapshotTotals, latestSnapshot, balanceOn, positionOn, observations, latestDate, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };
+// ---------- what rate assumptions do to the projection ----------
+// The same scenario seen three ways (lenses), everything else equal:
+//   setup  - each account and mortgage part as you have set it up (the ordinary projection)
+//   market - every savings account, cash ISA and mortgage part with a rate on market rates: its own model if it has one,
+//            else the starting model (TallyCurves.defaultModel); the scenario's own rate path, or the market curve if
+//            the scenario is "flat"
+//   flat   - every item at its own entered rates, carried forward (the engine before market rates)
+// Per item, month by month: balance, rate and interest. Instant cash ISAs are one pool in the projection, so they are
+// one item here. Mortgage payments feed the household's cash, so a lens can move cash and ISAs too.
+function rateImpact(data, sk, months) {
+  sk = sk || data.scenario;
+  const sc = data.scenarios[sk], kind = (sc.rates || {}).kind || 'market';
+  const onMarket = {
+    ...data,
+    accounts: data.accounts.map(a => (a.rateModel || !INTEREST_TYPES.has(a.type) ? a : { ...a, rateModel: EC.defaultModel({ category: 'savings', access: a.access }) })),
+    mortgage: { ...(data.mortgage || {}), parts: mortgageParts(data).map(p => (p.rateModel || !isSet(p.rate) ? p : { ...p, rateModel: EC.defaultModel({ category: 'mortgage', fixEnd: p.fixEnd }) })) },
+  };
+  const runs = {
+    setup: project(data, sk, months),
+    market: projectAs(onMarket, sk, { rates: kind === 'flat' ? { kind: 'market' } : sc.rates }, months),
+    flat: projectAs(data, sk, { rates: { kind: 'flat' } }, months),
+  };
+  if (!runs.setup) return null;
+  const L = Object.keys(runs), sum = (xs, f) => xs.reduce((s, r) => s + (f(r) || 0), 0);
+  const item = (key, kind, bal, rate, int) => ({ key, kind, ...Object.fromEntries(['balance', 'rate', 'interest'].map((f, j) => [f, Object.fromEntries(L.map(l => [l, runs[l].rows.map([bal, rate, int][j])]))])) });
+  const items = [];
+  for (const a of data.accounts) if (INTEREST_TYPES.has(a.type) && runs.setup.rows.some(r => r.accounts[a.id] != null))
+    items.push(item(a.id, 'account', r => r.accounts[a.id] ?? null, r => r.rates[a.id] ?? null, r => r.interest[a.id] ?? 0));
+  if (runs.setup.rows.some(r => r.isaCashFlex > 0.5)) items.push(item('cashIsaPool', 'pool', r => r.isaCashFlex, r => r.cashIsaRate, r => r.interest.cashIsaPool ?? 0));
+  mortgageParts(data).forEach((p, j) => { if (isSet(p.balance) && isSet(p.rate)) items.push(item(p.id, 'part', r => r.mortgageParts[j].bal, r => r.mortgageParts[j].rate, r => -r.mortgageParts[j].interest)); });
+  const totals = Object.fromEntries(L.map(l => { const R = runs[l].rows, end = R.at(-1); return [l, {
+    net: end.net, cash: end.closing, isa: end.isa, mortgageBal: end.mortgageBal, lowestCash: Math.min(...R.map(r => r.closing)),
+    interestEarned: sum(R, r => Object.entries(r.interest).reduce((s, [, v]) => s + v, 0)), mortgageInterest: sum(R, r => r.mortgageInterest),
+  }]; }));
+  return { runs, items, totals, layers: Object.fromEntries(L.map(l => [l, runs[l].rateLayer])), dates: runs.setup.rows.map(r => r.date) };
+}
+
+if (typeof module !== 'undefined') module.exports = { rateImpact, marketFix, project, snapshotTotals, latestSnapshot, balanceOn, positionOn, observations, latestDate, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };

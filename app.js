@@ -812,7 +812,7 @@ function vProjection() {
       ${group(Object.entries(tys).map(([y, t]) => row({ title: `${y}/${String(+y + 1).slice(2)}`, sub: `In ${short(t.in)} · out ${short(t.out)}`, value: amt(t.left), vsub: 'allowance left' })).join(''), 'ISA allowance by tax year', `Uses ${money(data.rules.isaPerPerson)} each for ${esc(data.rules.isaFillOrder.map(person).join(' and '))}, filling ${esc(person(data.rules.isaFillOrder[0]))}’s first. Money taken out of a flexible ISA can be put back in the same tax year without using new allowance; the projection tracks that separately.`)}
       ${pr.rateLayer.modelled ? `<p class="note">Interest rates: ${layerText(pr.rateLayer)}${pr.rateLayer.active && pr.rateLayer.kind !== 'manual' ? '. Market-implied, not a forecast' : ''}.</p>` : ''}
       ${group(months, 'Month by month', 'Tap a month for the full cash waterfall and ISA workings.')}
-      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Compare plans', sub: 'Two or three scenarios side by side', act: 'push', arg: 'plans' }) + row({ title: 'Range of outcomes and stress tests', sub: 'What markets, rates or a lost income could do', act: 'push', arg: 'risk' }) + row({ title: 'Interest rates', sub: layerText(pr.rateLayer), act: 'push', arg: 'rates' }) + row({ title: 'ISA allowance this tax year', sub: 'Per person, with what’s planned by 5 April', act: 'push', arg: 'isayear' }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
+      ${group(row({ title: `${esc(sc.name)} assumptions`, sub: sc.growth ? `S&S ${sc.ssReturn}% · inflation ${sc.inflation}% · pay ${sc.payRise}%` : 'No growth, no inflation, no pay rises', act: 'push', arg: 'scenario:' + sk }) + row({ title: 'Compare plans', sub: 'Two or three scenarios side by side', act: 'push', arg: 'plans' }) + row({ title: 'Range of outcomes and stress tests', sub: 'What markets, rates or a lost income could do', act: 'push', arg: 'risk' }) + row({ title: 'Interest rates', sub: layerText(pr.rateLayer), act: 'push', arg: 'rates' }) + row({ title: 'What rates change', sub: 'As set up, all on market rates, or all flat: account by account', act: 'push', arg: 'impact' }) + row({ title: 'ISA allowance this tax year', sub: 'Per person, with what’s planned by 5 April', act: 'push', arg: 'isayear' }) + row({ title: 'Cash floor and ISA rules', act: 'edit-rules' }) + row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }), 'Refine')}`,
     after: () => { mountChart('c-proj'); mountChart('c-cash'); },
   };
 }
@@ -1882,6 +1882,7 @@ function vMarket() {
     body: `${seg(Object.entries(data.scenarios).map(([k, v]) => [k, esc(v.name)]), sk, 'scenario')}
       ${series.length ? `<section class="card"><div class="gh">Expected Bank Rate<b>next 10 years</b></div>${ch}<div class="legend">${series.map(x => `<span><i style="background:${x.color}"></i>${x.name}</span>`).join('')}</div></section>` : ''}
       ${st && st.level === 'red' ? `<p class="note">This curve is more than a month old. Use a newer one when it appears, or a manual path meanwhile.</p>` : ''}
+      ${group(row({ title: 'What rates change', sub: 'Your projection as set up, all on market rates, or all flat - account by account and across scenarios', act: 'push', arg: 'impact' }))}
       ${curveRows ? group(curveRows, 'Market curve') : ''}
       ${group(row({ title: `Rates in ${esc(sc.name)}`, sub: layerText(L), value: esc(TC.KINDS[(sc.rates || {}).kind || 'market']), act: 'edit-rates', arg: sk }), 'This plan', 'Each scenario can take the market’s path as it is, move it, or use one of your own. Compare them from Projection › Compare plans.')}
       ${items.length ? group(items.map(x => row({ title: esc(x.name), sub: esc(TC.describe(x.model, x.ctx)), value: x.model ? '<span class="pill ok">Market</span>' : '<span class="pill">As entered</span>', act: 'edit-ratemodel', arg: x.key })).join('') +
@@ -2037,6 +2038,77 @@ function monthRatesGroup(r) {
   if (r.interest.cashIsaPool != null && r.isaCashFlex > 0.5) out.push(row({ title: 'Instant cash ISAs', sub: 'Pooled: their balance-weighted rate', value: pctf(r.cashIsaRate), vsub: money(r.interest.cashIsaPool, { sign: true }) }));
   r.mortgageParts.forEach((p, i) => { if (p.rate == null) return; out.push(row({ title: esc(partName(data.mortgage.parts[i] || p, i)) + (r.mortgageParts.length > 1 ? '' : ' interest'), sub: (p.repriced ? '<span class="badge out">Repriced</span> ' : '') + esc(p.why ? whyText(p.why) : 'Its entered rate'), value: pctf(p.rate), vsub: money(-p.interest, { sign: true }), act: p.why ? 'why' : null, arg: `p:${p.id}|${r.k}` })); });
   return out.length ? group(out.join(''), 'Interest rates', `${sc.growth ? '' : 'Growth and interest are off in this scenario, so savings earn nothing here. '}${layerText(layerOf(scenarioKey()))}. Tap a market rate for its workings.`) : '';
+}
+
+// ---------- what rate assumptions do to the projection (rateImpact in engine.js) ----------
+// One scenario three ways: each item as set up, every item on market rates, every item flat. Per account and mortgage
+// part, and across scenarios.
+const LENS = [['setup', 'As set up', 'var(--c-net)'], ['market', 'All on market rates', 'var(--c-isa)'], ['flat', 'All flat', 'var(--c-cash)']];
+const lensSame = (I, a, b) => I.runs[a].rows.every((r, i) => { const o = I.runs[b].rows[i]; return Math.abs(r.net - o.net) < 0.005 && Math.abs((r.mortgageBal || 0) - (o.mortgageBal || 0)) < 0.005; });
+function impactItemName(x) {
+  if (x.kind === 'pool') return 'Instant cash ISAs';
+  if (x.kind === 'part') { const i = data.mortgage.parts.findIndex(p => p.id === x.key); return i < 0 ? 'Mortgage' : partName(data.mortgage.parts[i], i); }
+  return accLabel(acc(x.key));
+}
+function vImpact() {
+  const sk = scenarioKey(), sc = data.scenarios[sk], H = ui.impH || 60, view = ui.impView || 'balance';
+  const head = { title: 'What rates change', large: true, back: 'Back' };
+  const I = latestSnapshot(data) ? rateImpact(data, sk, H) : null;
+  if (!I) return { ...head, body: '<p class="note">Add your balances first: the projection starts from your latest update.</p>' };
+  const T = I.dates.map(d => monthEndT(d)), endLabel = fMonth(I.dates.at(-1));
+  // lines that would sit exactly on top of another are drawn once, and the legend says so
+  const setupIs = lensSame(I, 'setup', 'flat') ? 'flat' : lensSame(I, 'setup', 'market') ? 'market' : null;
+  const marketIsFlat = lensSame(I, 'market', 'flat');
+  const shown = LENS.filter(([l]) => !(l === 'setup' && setupIs) && !(l === 'market' && marketIsFlat));
+  const lensName = l => LENS.find(x => x[0] === l)[1];
+  const legend = `<div class="legend">${shown.map(([l, n, c]) => `<span><i style="background:${c}"></i>${n}${l === 'flat' && marketIsFlat ? ' (= market)' : ''}${setupIs === l ? ' (= as set up)' : ''}</span>`).join('')}</div>`;
+  const seriesOf = f => shown.map(([l, n, c]) => ({ name: n, color: c, dash: l === 'flat', w: l === 'setup' ? 2.6 : 2, pts: T.map((t, i) => ({ t, v: f(l, i) })).filter(p => p.v != null && !isNaN(p.v)) })).filter(s => s.pts.length > 1);
+  const diffVsFlat = (v, l) => (l === 'flat' ? '' : `<div class="sub">${chg(v)} vs flat</div>`);
+
+  // the summary, lens by lens
+  const tot = I.totals, rowOf = (label, f, o = {}) => `<tr><th>${label}</th>${LENS.map(([l]) => `<td>${amt(f(tot[l]), { color: o.color })}${diffVsFlat(f(tot[l]) - f(tot.flat), l)}</td>`).join('')}</tr>`;
+  const summary = `<div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${LENS.map(([, n]) => `<th>${n}</th>`).join('')}</tr></thead><tbody>
+    ${rowOf(`Net worth, ${endLabel}`, t => t.net)}
+    ${rowOf('Interest earned', t => t.interestEarned)}
+    ${I.items.some(x => x.kind === 'part') ? rowOf('Mortgage interest paid', t => -t.mortgageInterest, { color: true }) + rowOf(`Mortgage left, ${endLabel}`, t => -(t.mortgageBal ?? 0), { color: true }) : ''}
+    ${rowOf('Lowest cash', t => t.lowestCash)}</tbody></table></div>`;
+  const cNet = chart('c-imp-net', { series: seriesOf((l, i) => I.runs[l].rows[i].net - I.runs.flat.rows[i].net).filter(s => s.name !== lensName('flat')).concat([{ name: 'All flat', color: 'var(--c-cash)', dash: true, w: 1.4, pts: [{ t: T[0], v: 0 }, { t: T.at(-1), v: 0 }] }]), height: 130, vfmt: v => money(v, { sign: true }) });
+
+  // per account and mortgage part
+  const cards = I.items.map((x, n) => {
+    const f = view === 'rate' ? (l, i) => x.rate[l][i] : (l, i) => x.balance[l][i];
+    const ch = chart('c-imp-' + n, { series: seriesOf(f), height: 110, ...(view === 'rate' ? { fmt: v => `${v.toFixed(1)}%`, vfmt: pctf } : {}) });
+    const int = l => x.interest[l].reduce((s, v) => s + v, 0), endBal = l => x.balance[l].at(-1);
+    const tbl = `<div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${LENS.map(([, nm]) => `<th>${nm}</th>`).join('')}</tr></thead><tbody>
+      <tr><th>${x.kind === 'part' ? 'Interest paid' : 'Interest earned'}</th>${LENS.map(([l]) => `<td>${amt(Math.abs(int(l)))}</td>`).join('')}</tr>
+      <tr><th>${x.kind === 'part' ? 'Left' : 'Balance'}, ${endLabel}</th>${LENS.map(([l]) => `<td>${endBal(l) == null ? '–' : amt(endBal(l))}</td>`).join('')}</tr>
+      <tr><th>Rate, ${endLabel}</th>${LENS.map(([l]) => `<td>${pctf(x.rate[l].at(-1))}</td>`).join('')}</tr></tbody></table></div>`;
+    const it = x.kind === 'pool' ? null : rateItem((x.kind === 'part' ? 'part:' : 'acct:') + x.key);
+    const how = it ? `<div class="gf" style="margin:8px 0 0">As set up: ${esc(TC.describe(it.model, it.ctx))}. <a href="#" data-act="edit-ratemodel" data-arg="${esc(it.key)}">Change</a></div>` : `<div class="gf" style="margin:8px 0 0">Instant cash ISAs are one pool in the projection, at their balance-weighted rate.</div>`;
+    return `<section class="card"><div class="gh">${esc(impactItemName(x))}<b>${x.kind === 'part' ? 'mortgage' : view === 'rate' ? 'rate' : 'balance'}</b></div>${ch}${tbl}${how}</section>`;
+  }).join('');
+
+  // across scenarios
+  const others = Object.keys(data.scenarios).map(k => ({ k, I: k === sk ? I : rateImpact(data, k, H) })).filter(u => u.I);
+  const across = (label, f) => `<tr class="sec"><th colspan="4">${label}</th></tr>` + others.map(u => `<tr><th>${esc(data.scenarios[u.k].name)}</th>${LENS.map(([l]) => `<td>${amt(f(u.I.totals[l]), { color: true })}${diffVsFlat(f(u.I.totals[l]) - f(u.I.totals.flat), l)}</td>`).join('')}</tr>`).join('');
+  const acrossTbl = `<div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${LENS.map(([, n]) => `<th>${n}</th>`).join('')}</tr></thead><tbody>
+    ${across(`Net worth, ${endLabel}`, t => t.net)}${across('Interest earned', t => t.interestEarned)}${I.items.some(x => x.kind === 'part') ? across('Mortgage interest paid', t => -t.mortgageInterest) : ''}</tbody></table></div>`;
+
+  const noCurve = !I.layers.market.active;
+  const n = I.items.length;
+  return {
+    ...head,
+    body: `${seg(Object.entries(data.scenarios).map(([k, v]) => [k, esc(v.name)]), sk, 'scenario')}
+      <div class="chips">${[[36, '3 years'], [60, '5 years'], [120, '10 years']].map(([m, l]) => `<button class="${m === H ? 'on' : ''}" data-act="imp-h" data-arg="${m}">${l}</button>`).join('')}${[['balance', 'Balances'], ['rate', 'Rates']].map(([v, l]) => `<button class="${v === view ? 'on' : ''}" data-act="imp-view" data-arg="${v}">${l}</button>`).join('')}</div>
+      <p class="note">The ${esc(sc.name)} plan three ways, with everything else the same. <b>As set up</b>: each account as you have it (${I.layers.setup.modelled ? `${I.layers.setup.modelled} on market rates` : 'none on market rates yet'}). <b>All on market rates</b>: every savings account, cash ISA and mortgage part following ${noCurve ? 'the market curve - none in use yet' : esc(layerText(I.layers.market))}. <b>All flat</b>: every rate as entered, for ever.${sc.growth ? '' : ' Growth and interest are off in this scenario, so savings earn nothing here and only the mortgage differs.'}</p>
+      ${noCurve ? group(row({ title: 'No market curve in use', sub: 'Use one on Interest rates to see the market lines', act: 'push', arg: 'rates' })) : ''}
+      <section class="card"><div class="gh">Over ${H / 12} years<b>to ${endLabel}</b></div>${summary}</section>
+      <section class="card"><div class="gh">Net worth against all flat</div>${cNet}${legend}</section>
+      ${cards ? `<div class="gh" style="margin:22px 4px 8px">Account by account</div>${cards}` : '<p class="note">No savings, cash ISAs or mortgage with a balance and rate to show yet.</p>'}
+      <section class="card"><div class="gh">Every scenario<b>to ${endLabel}</b></div>${acrossTbl}</section>
+      <p class="note">Mortgage payments come out of your cash, so a different mortgage rate also moves what goes into ISAs. Market-implied rates are not a forecast.</p>`,
+    after: () => { mountChart('c-imp-net'); for (let i = 0; i < n; i++) mountChart('c-imp-' + i); },
+  };
 }
 
 // ---------- sheets ----------
@@ -2318,7 +2390,7 @@ function currentView() {
   const top = ui.stacks[ui.tab].at(-1);
   if (top) {
     const [kind, arg] = [top.slice(0, top.indexOf(':') < 0 ? top.length : top.indexOf(':')), top.includes(':') ? top.slice(top.indexOf(':') + 1) : null];
-    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, insights: vInsights, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports, isayear: vIsaYear, goal: vGoal, risk: vRisk, checks: vChecks, rates: vMarket })[kind];
+    const v = ({ pool: vPool, acct: vAccount, snaps: vSnaps, snap: vSnap, month: vMonth, scenario: vScenario, spending: vSpending, events: vEvents, mortgage: vMortgage, mpart: vMortgagePart, bundle: vBundle, ready: vReady, compare: vCompare, plans: vPlans, calendar: vCalendar, actuals: vActuals, insights: vInsights, txns: vTxns, uncat: vUncat, recurring: vRecurring, rules: vRules, imports: vImports, isayear: vIsaYear, goal: vGoal, risk: vRisk, checks: vChecks, rates: vMarket, impact: vImpact })[kind];
     if (v) return v(arg);
   }
   return ({ home: vHome, accounts: vAccounts, projection: vProjection, plan: vPlan })[ui.tab]();
@@ -2379,6 +2451,7 @@ const actions = {
   'curve-use': () => { const c = newerCurve(); if (c) useCurve(c); }, 'edit-rates': rateScenarioSheet, 'edit-ratemodel': rateModelSheet, 'rates-all': allOnMarket, why: whySheet,
   'rate-market': key => { const x = rateItem(key); if (!x) return; x.item.rateModel = starterModel(x); changed(data.rateBasis ? 'On market rates' : 'On market rates once a curve is in use'); },
   'open-rates': k => { if (k) ui.scenario = k; actions.push('rates'); },
+  'imp-h': m => { ui.impH = +m; render(); }, 'imp-view': v => { ui.impView = v; render(); },
   'add-option-market': m => { const C = compareOptions(data, scenarioKey(), 60, thisMonth()), q = C.market && C.market.find(x => x.months === +m); if (q) optionSheet(null, { name: `Market ${q.months / 12}-year fix`, rate: Math.round(q.rate * 100) / 100, fixMonths: q.months }); },
   'edit-part': partSheet, 'add-part': () => partSheet(null), 'edit-home': homeSheet, 'edit-rules': rulesSheet, 'edit-scenario': scenarioSheet, 'edit-people': peopleSheet,
   'edit-buffer': () => formSheet({ title: 'Buffer', values: { bufferPct: data.bufferPct }, sections: [{ foot: 'Added on top of all regular spending, including the mortgage.', fields: [{ key: 'bufferPct', label: 'Buffer', type: 'percent', unit: '%' }] }], onSave: v => { data.bufferPct = v.bufferPct; changed('Buffer saved'); } }),
