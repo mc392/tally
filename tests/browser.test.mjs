@@ -677,6 +677,31 @@ try {
     await touch.waitForFunction(([k, g]) => data.scenarios[k].growth === g, [tk, g0], { timeout: 3000 });
     ok(true, 'a tap on the row’s words flips it too');
   }
+
+  console.log('Swiping from the left edge to go back');
+  // real touch input through the browser's own pipeline, not synthetic DOM events
+  const cdp = await touch.context().newCDPSession(touch);
+  const drag = async (pts, gap = 16) => {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: pts[0][0], y: pts[0][1] }] });
+    for (const [x, y] of pts.slice(1)) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] }); await touch.waitForTimeout(gap); }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await touch.waitForTimeout(400);
+  };
+  await touch.evaluate(() => { ui.tab = 'projection'; ui.stacks.projection = ['impact']; render({ top: true }); });
+  await touch.waitForTimeout(300);
+  await drag([[4, 400], [40, 402], [120, 404], [200, 405], [280, 406], [330, 406]]);
+  ok(await touch.evaluate(() => ui.stacks.projection.length === 0 && !document.querySelector('.swipe-under') && !document.body.classList.contains('swiping')), 'a swipe from the left edge goes back to Projection');
+  await touch.evaluate(() => { ui.stacks.projection = ['impact']; render({ top: true }); });
+  await touch.waitForTimeout(300);
+  await drag([[4, 400], [30, 400], [60, 401], [70, 401]], 60);
+  ok(await touch.evaluate(() => ui.stacks.projection.length === 1 && !document.querySelector('.swipe-under') && document.querySelector('#main > .page').style.transform === ''), 'a short, slow swipe springs back and stays put');
+  await drag([[4, 300], [8, 360], [10, 440], [12, 520]]);
+  ok(await touch.evaluate(() => ui.stacks.projection.length === 1), 'a mostly vertical drag from the edge is a scroll, not a swipe');
+  await drag([[200, 400], [260, 400], [340, 400]]);
+  ok(await touch.evaluate(() => ui.stacks.projection.length === 1), 'a swipe that starts away from the edge does nothing');
+  await touch.evaluate(() => { ui.stacks.projection = []; render({ top: true }); });
+  await drag([[4, 400], [120, 400], [300, 400]]);
+  ok(await touch.evaluate(() => ui.tab === 'projection' && !document.querySelector('.swipe-under')), 'nothing to go back to: the gesture is ignored');
   await touch.close();
 
   console.log('Newer files');

@@ -2087,13 +2087,14 @@ function partPayment(p) {
 // What the projection says about one part: its balance at the end, and its payment once the fix ends.
 function partOutlook(pr, p) {
   const end = pr.rows.at(-1).mortgageParts.find(x => x.id === p.id);
-  const full = p.balance != null && p.rate != null;
+  const full = p.balance != null && p.rate != null && !!end; // no projection yet (no balances entered): nothing to say
   const after = full && p.fixEnd && p.newRate != null && p.termEnd ? pr.rows.find(r => r.date >= p.fixEnd)?.mortgageParts.find(x => x.id === p.id)?.pay : null;
   return { full, endBal: end ? end.bal : null, after };
 }
 function vMortgage() {
   const m = data.mortgage, mt = mortgageTotals(data), parts = m.parts, one = parts.length === 1;
-  const pr = project(data, scenarioKey(), horizon()), end = pr.rows.at(-1);
+  // with no balances entered yet there is no projection: the page still shows the mortgage, just no outlook
+  const pr = project(data, scenarioKey(), horizon()) || { rows: [{ mortgageParts: [], mortgageBal: null, date: todayISO() }] }, end = pr.rows.at(-1);
   const eq = m.propertyValue && mt.balance != null ? m.propertyValue - mt.balance : null;
   const home = row({ title: 'Home value', value: m.propertyValue ? amt(m.propertyValue) : 'Not set', act: 'edit-home' });
   const addPart = row({ title: 'Add a part', act: 'add-part', cls: 'act-row', chev: false });
@@ -2162,7 +2163,7 @@ function mortgageCharts(partId) {
 function vMortgagePart(id) {
   const parts = data.mortgage.parts, i = parts.findIndex(p => p.id === id), p = parts[i];
   if (!p) { ui.stacks[ui.tab].pop(); return currentView(); }
-  const pr = project(data, scenarioKey(), horizon()), o = partOutlook(pr, p), end = pr.rows.at(-1);
+  const pr = project(data, scenarioKey(), horizon()) || { rows: [{ mortgageParts: [], mortgageBal: null, date: todayISO() }] }, o = partOutlook(pr, p), end = pr.rows.at(-1);
   const MC = o.full ? mortgageCharts(p.id) : { html: '', mount: () => { } };
   return {
     title: partName(p, i), large: true, back: 'Mortgage', right: `<button class="pill" data-act="edit-part" data-arg="${esc(p.id)}" style="color:var(--accent)">Edit</button>`,
@@ -2887,6 +2888,67 @@ document.addEventListener('change', e => {
   clearTimeout(swTimers.get(key)); swTimers.set(key, setTimeout(() => { swTimers.delete(key); f(arg, on); }, wait));
 });
 window.addEventListener('beforeunload', e => { if (meta.dirty && !framed) { e.preventDefault(); e.returnValue = ''; } });
+
+// ---------- swipe from the left edge to go back (Oct 2026) ----------
+// As on iOS: start a swipe at the left edge of a page that has somewhere to go back to, and the page follows the
+// finger with the one underneath sliding in. Let go past a third of the width, or with a quick flick, and it goes
+// back; otherwise it springs back. A mostly vertical movement is a scroll and is left alone, and nothing happens
+// with a sheet open. The page underneath is drawn from the same views, so it is exactly what Back shows.
+const EDGE = 30;
+let swipe = null;
+function swipeUnder() {
+  const st = ui.stacks[ui.tab], top = st.pop();
+  let v; try { v = currentView(); } finally { st.push(top); }
+  const u = document.createElement('div'); u.className = 'swipe-under';
+  u.innerHTML = `<div class="page">${v.large && !v.noNav ? `<h1 class="large">${esc(v.title)}</h1>` : ''}${v.body}</div>`;
+  u.style.top = `${window.scrollY}px`; // the page underneath opens at its top, wherever this one is scrolled to
+  return u;
+}
+document.addEventListener('touchstart', e => {
+  swipe = null;
+  if (e.touches.length !== 1 || !data || document.querySelector('.sheet-wrap.open')) return;
+  const t = e.touches[0]; if (t.clientX > EDGE) return;
+  // with nothing to go back to, the swipe is still held here, so a browser that has its own edge-swipe "back"
+  // does not take you out of the app by accident
+  swipe = { x: t.clientX, y: t.clientY, t: performance.now(), dx: 0, on: false, last: [], none: !ui.stacks[ui.tab].length };
+}, { passive: true });
+document.addEventListener('touchmove', e => {
+  if (!swipe) return;
+  const t = e.touches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+  if (!swipe.on) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { swipe = null; return; } // a scroll
+    if (dx < 10) return;
+    if (swipe.none) { e.preventDefault(); return; }
+    const pg = $('#main > .page'); if (!pg) { swipe = null; return; }
+    swipe.on = true; swipe.pg = pg; swipe.under = swipeUnder(); $('#main').prepend(swipe.under);
+    document.body.classList.add('swiping');
+  }
+  e.preventDefault(); // the page is being dragged, not scrolled
+  swipe.dx = Math.max(0, dx);
+  const w = innerWidth, f = Math.min(1, swipe.dx / w);
+  swipe.pg.style.transform = `translateX(${swipe.dx}px)`;
+  swipe.under.style.transform = `translateX(${(-30 * (1 - f)).toFixed(2)}%)`;
+  swipe.under.style.opacity = (0.6 + 0.4 * f).toFixed(3);
+  swipe.last.push([performance.now(), t.clientX]); if (swipe.last.length > 5) swipe.last.shift();
+}, { passive: false });
+function swipeEnd() {
+  const S = swipe; swipe = null; if (!S || !S.on) return;
+  const w = innerWidth, [a, b] = [S.last[0], S.last.at(-1)], v = a && b && b[0] > a[0] ? (b[1] - a[1]) / (b[0] - a[0]) : 0; // px per ms
+  const go = S.dx > w / 3 || (v > 0.45 && S.dx > 40);
+  const ease = 'transform .24s cubic-bezier(.2,.8,.2,1), opacity .24s';
+  S.pg.style.transition = S.under.style.transition = calm() ? 'none' : ease;
+  S.pg.style.transform = go ? `translateX(${w}px)` : 'translateX(0)';
+  S.under.style.transform = go ? 'translateX(0)' : 'translateX(-30%)';
+  S.under.style.opacity = go ? '1' : '.6';
+  const done = () => {
+    document.body.classList.remove('swiping');
+    if (go) { ui.stacks[ui.tab].pop(); render(); window.scrollTo(0, 0); } // the page underneath is already in place: no second animation
+    else { S.pg.style.transform = S.pg.style.transition = ''; S.under.remove(); }
+  };
+  if (calm()) done(); else setTimeout(done, 250);
+}
+document.addEventListener('touchend', swipeEnd, { passive: true });
+document.addEventListener('touchcancel', swipeEnd, { passive: true });
 
 // ---------- start ----------
 restore();

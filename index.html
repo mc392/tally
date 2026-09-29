@@ -384,6 +384,11 @@ textarea{width:100%; min-height:160px; border-radius:12px; border:0; padding:12p
 #tabbar button.on svg{animation:pop .35s cubic-bezier(.2,.8,.2,1)}
 .sheet-wrap.open .sheet .group{animation:rise .4s cubic-bezier(.2,.8,.2,1) both}
 .switch span::after{transition:transform .25s cubic-bezier(.3,1.4,.5,1)}
+/* swipe back: the page follows the finger over the one it goes back to */
+#main{position:relative}
+.swipe-under{position:absolute; left:0; right:0; z-index:0; pointer-events:none; overflow:hidden; height:100vh; transform:translateX(-30%); opacity:.6}
+.swiping #main > .page{position:relative; z-index:1; background:var(--bg); box-shadow:-10px 0 28px rgba(0,0,0,.14); will-change:transform}
+.swiping{overflow-x:hidden}
 @media (prefers-reduced-motion: reduce){ *{animation:none!important; transition:none!important} }
 @media (min-width:700px){ .page{padding-top:12px} }
 </style>
