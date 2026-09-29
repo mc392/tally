@@ -958,18 +958,21 @@ function lineSheet(arg) {
   const onlyHere = f.on === false && L.on === true && f.plan;
   const F = [
     { key: 'use', label: 'In this plan', type: 'select', options: [['as', `As set (${f.on === false ? 'off' : 'on'})`], ['on', 'On'], ['off', 'Off']] },
-    ...(f.linked ? [] : [{ key: 'amount', label: f.kind === 'oneoff' ? 'Amount (− = out)' : 'A month', type: 'money', optional: true, ph: `As set: ${nf0.format(+f.amount || 0)}`, sign: f.kind === 'oneoff' }]),
+    ...(f.linked ? [] : [{ key: 'amount', label: f.kind === 'oneoff' ? 'Amount' : 'A month', type: 'money', optional: true, ph: `As set: ${nf0.format(Math.abs(+f.amount || 0))}`,
+      ...(f.kind === 'oneoff' ? { signed: ['Out', 'In'], signDefault: +f.amount < 0 ? '-' : '+' } : f.bundle && f.kind === 'income' ? { signed: ['Less', 'More'], signDefault: +f.amount < 0 ? '-' : '+' } : {}) }]),
     { key: 'start', label: f.kind === 'oneoff' ? 'Month' : 'From', type: 'month', optional: true },
     ...(f.kind === 'oneoff' ? [] : [{ key: 'end', label: 'Until', type: 'month', optional: true }])];
   formSheet({
     title: f.name, values: { use: L.on == null ? 'as' : L.on ? 'on' : 'off', amount: L.amount ?? null, start: L.start ?? f.start, end: L.end ?? f.end },
-    sections: [{ foot: `Only ${s.name} changes. Blank amount = as set.${f.linked ? ' The mortgage payment itself comes from the mortgage.' : ''}`, fields: F }],
+    sections: [{ foot: `Only ${s.name} changes. A blank amount is as set; switching Out / In on its own flips it.${f.linked ? ' The mortgage payment itself comes from the mortgage.' : ''}`, fields: F }],
     extra: (Object.keys(L).length ? destructive(onlyHere ? 'Delete this line' : 'Use the line as set', 'reset') : ''),
     onSave: (v, act) => {
       s.lines ||= {};
       if (act === 'reset') { delete s.lines[id]; if (onlyHere && !Object.values(data.scenarios).some(x => x.lines && x.lines[id])) data.flows = data.flows.filter(x => x !== f); return changed(onlyHere ? 'Line deleted' : `${f.name}: as set in ${s.name}`); }
       const N = {};
       if (v.use !== 'as') N.on = v.use === 'on';
+      // a blank amount is "as set" - unless Out / In was switched, which flips the amount as set
+      if (v.amount == null && v.amountSign && (v.amountSign === '-') !== (+f.amount < 0) && +f.amount) v.amount = -f.amount;
       if (v.amount != null && Math.abs(v.amount - (+f.amount || 0)) > 0.004) N.amount = v.amount;
       if ((v.start || null) !== (f.start || null)) N.start = v.start || null;
       if (f.kind === 'oneoff') { if (N.start !== undefined) N.end = N.start; } else if ((v.end || null) !== (f.end || null)) N.end = v.end || null;
@@ -981,10 +984,10 @@ function lineSheet(arg) {
 function lineAddSheet(key) {
   const s = data.scenarios[key];
   const F = [
-    { key: 'kind', label: 'Kind', type: 'select', options: [['spend', 'Regular spending'], ['income', 'Regular income'], ['oneoff', 'One-off']] },
+    { key: 'kind', label: 'Kind', type: 'select', options: [['spend', 'Regular spending'], ['income', 'Regular income'], ['oneoff', 'One-off cost'], ['oneoffIn', 'One-off money in']] },
     { key: 'name', label: 'Name', type: 'text', ph: 'e.g. Nursery' },
     { key: 'category', label: 'Category', type: 'text', ph: 'e.g. Childcare', optional: true },
-    { key: 'amount', label: 'Amount', type: 'money', hint: 'A month; a one-off’s total, − for money out' },
+    { key: 'amount', label: 'Amount', type: 'money', hint: 'A month, or a one-off’s total' },
     { key: 'start', label: 'From (or the month)', type: 'month', optional: true },
     { key: 'end', label: 'Until', type: 'month', optional: true }];
   formSheet({
@@ -992,8 +995,9 @@ function lineAddSheet(key) {
     sections: [{ foot: 'It is added to this plan only. Other plans and the Plan tab don’t include it (you can switch it on in another plan too).', fields: F }],
     onSave: v => {
       if (!v.name.trim()) { toast('Give it a name', true); return false; }
-      const f = { id: uid('f'), name: v.name.trim(), kind: v.kind, amount: v.kind === 'oneoff' ? v.amount : Math.abs(v.amount), category: v.category || (v.kind === 'income' ? 'Income' : v.kind === 'oneoff' ? (v.amount < 0 ? 'One-off' : 'Receipt') : 'Other'),
-        owner: null, start: v.start, end: v.kind === 'oneoff' ? v.start : v.end, inflates: v.kind === 'spend', growth: 0, bundle: null, on: false, plan: key };
+      const oneIn = v.kind === 'oneoffIn', kind = oneIn ? 'oneoff' : v.kind, amount = kind === 'oneoff' ? (oneIn ? 1 : -1) * Math.abs(v.amount) : Math.abs(v.amount);
+      const f = { id: uid('f'), name: v.name.trim(), kind, amount, category: v.category || (kind === 'income' ? 'Income' : kind === 'oneoff' ? (amount < 0 ? 'One-off' : 'Receipt') : 'Other'),
+        owner: null, start: v.start, end: kind === 'oneoff' ? v.start : v.end, inflates: kind === 'spend', growth: 0, bundle: null, on: false, plan: key };
       data.flows.push(f); (s.lines ||= {})[f.id] = { on: true };
       changed(`${f.name} added to ${s.name}`);
     },
@@ -1700,7 +1704,7 @@ function calendarMonthSheet(m) {
     sections: [
       ...(regular.filter(f => f.kind === 'income').length ? [{ head: 'Coming in this month', fields: regular.filter(f => f.kind === 'income').map(f => ({ key: 'f_' + f.id, label: label(f), type: 'money', hint: f.overrides && f.overrides[m] != null ? `Set by hand · usually ${money(f.amount)}` : '' })) }] : []),
       ...(regular.filter(f => f.kind === 'spend').length ? [{ head: 'Going out this month', foot: 'A figure you change here is used exactly for this month, with no inflation added. Put it back to the usual amount to undo it.', fields: regular.filter(f => f.kind === 'spend').map(f => ({ key: 'f_' + f.id, label: label(f), type: 'money', hint: f.overrides && f.overrides[m] != null ? `Set by hand · usually ${money(f.amount)}` : '' })) }] : []),
-      ...(oneoffs.length ? [{ head: 'One-offs this month', foot: 'Minus for money out.', fields: oneoffs.map(f => ({ key: 'o_' + f.id, label: label(f), type: 'money' })) }] : [])],
+      ...(oneoffs.length ? [{ head: 'One-offs this month', fields: oneoffs.map(f => ({ key: 'o_' + f.id, label: label(f), type: 'money', signed: ['Out', 'In'] })) }] : [])],
     extra: `<section class="group"><div class="list"><button class="row act-row" data-sact="add-oneoff"><div class="main"><div class="ttl">Add a one-off in ${fMonth(m + '-01')}</div></div></button></div></section>`,
     onSave: (v, act) => {
       if (act === 'add-oneoff') { setTimeout(() => eventSheet(null, null, m), 360); return; }
@@ -1996,7 +2000,7 @@ function vBundle(id) {
         row({ title: 'Starts', value: b.start ? fMonth(b.start) : 'Not set', vsub: 'moving it moves every line', act: 'edit-bundle', arg: id }) +
         row({ title: 'Scale', value: `${Math.round((+b.scale || 0) * 100)}%`, vsub: 'every amount', act: 'edit-bundle', arg: id }) +
         row({ title: 'Contingency', value: `${+b.contingency || 0}%`, vsub: 'added to costs', act: 'edit-bundle', arg: id }), 'Settings')}
-      ${kinds.map(([k, h, act]) => { const l = lines.filter(f => f.kind === k); return l.length ? group(l.map(f => lineRow(f, act)).join(''), h, k === 'income' ? 'A minus figure is a drop from usual pay during the period.' : '') : ''; }).join('')}
+      ${kinds.map(([k, h, act]) => { const l = lines.filter(f => f.kind === k); return l.length ? group(l.map(f => lineRow(f, act)).join(''), h, k === 'income' ? 'An income change marked Less is a drop from usual pay during the event; switching the event off restores usual pay.' : '') : ''; }).join('')}
       ${group(row({ title: 'Add an income change', act: 'add-income', arg: 'b:' + id, cls: 'act-row', chev: false }) + row({ title: 'Add a monthly cost', act: 'add-spend', arg: 'b:' + id, cls: 'act-row', chev: false }) + row({ title: 'Add a one-off item', act: 'add-event', arg: 'b:' + id, cls: 'act-row', chev: false }))}
       <p class="note">Every amount came from a template as a placeholder: check each one against your own situation. None of it is advice.</p>`,
   };
@@ -2048,9 +2052,9 @@ function templateReview({ bundle, flows }) {
   const kindWord = { income: 'income change a month', spend: 'cost a month', oneoff: 'one-off' };
   formSheet({
     title: 'Check each line', values: vals,
-    sections: [{ head: bundle.name, foot: 'Change any amount, or switch a line off to leave it out. Income changes can be negative: a drop from usual pay. Nothing is saved until you tap Save.', fields: flows.flatMap((f, i) => [
+    sections: [{ head: bundle.name, foot: 'Change any amount, or switch a line off to leave it out. An income change can be Less (a drop from usual pay) or More. Nothing is saved until you tap Save.', fields: flows.flatMap((f, i) => [
       { key: 'on' + i, label: f.name, type: 'toggle', hint: `${flowWhen(f)} · ${kindWord[f.kind]}${f.note ? ' · ' + f.note : ''}` },
-      { key: 'a' + i, label: f.kind === 'spend' ? 'Cost a month' : f.kind === 'income' ? 'Change a month' : 'Amount (minus = out)', type: 'money' }]) }],
+      { key: 'a' + i, label: f.kind === 'spend' ? 'Cost a month' : f.kind === 'income' ? 'Change a month' : 'Amount', type: 'money', ...(f.kind === 'income' ? { signed: ['Less', 'More'] } : f.kind === 'oneoff' ? { signed: ['Out', 'In'] } : {}) }]) }],
     onSave: v => {
       const keep = flows.filter((f, i) => { f.amount = v['a' + i]; return v['on' + i]; });
       data.bundles.push(bundle); data.flows.push(...keep);
@@ -2491,6 +2495,10 @@ function sheet({ title, body, done = 'Save', onDone, onOpen }) {
   const submit = e => { e && e.preventDefault(); if (onDone && onDone(form, close) !== false) close(); };
   if (done) w.querySelector('.done').onclick = submit;
   form.addEventListener('submit', submit);
+  form.addEventListener('click', e => {
+    const sg = e.target.closest('[data-sgn]');
+    if (sg) { e.preventDefault(); const box = sg.parentElement; box.querySelector('input').value = sg.dataset.sgn; box.querySelectorAll('button').forEach(x => { x.classList.toggle('on', x === sg); x.setAttribute('aria-pressed', String(x === sg)); }); }
+  });
   form.addEventListener('click', e => { const b = e.target.closest('[data-sact]'); if (b) { e.preventDefault(); b.dataset.sact === 'close' ? close() : onDone && onDone(form, close, b.dataset.sact); } });
   onOpen && onOpen(form, close);
   return { close, form };
@@ -2503,6 +2511,12 @@ function fieldHTML(f, v) {
   if (f.type === 'select') return `<div class="field${f.stack ? ' stack' : ''}">${lab}<select id="${id}" name="${f.key}">${f.options.map(([ov, ol]) => `<option value="${esc(ov)}" ${String(ov) === String(v ?? '') ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select></div>`;
   if (f.type === 'date') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="date" value="${esc(v || '')}"></div>`;
   if (f.type === 'month') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="month" value="${esc(v ? String(v).slice(0, 7) : '')}" placeholder="YYYY-MM"></div>`;
+  // A money field that can go either way (f.signed = [label for minus, label for plus]) shows the amount as a plain
+  // number beside a two-way switch: the iPhone's number pad has no minus key, so a sign can't be typed there.
+  if (f.signed) {
+    const neg = v != null && v !== '' ? +v < 0 : f.signDefault === '-', abs = v == null || v === '' ? '' : nf2.format(Math.abs(v)).replace(/\.00$/, '');
+    return `<div class="field">${lab}<span class="sgn" role="group" aria-label="${esc(f.signed.join(' or '))}"><button type="button" data-sgn="-" class="${neg ? 'on' : ''}" aria-pressed="${neg}">${esc(f.signed[0])}</button><button type="button" data-sgn="+" class="${neg ? '' : 'on'}" aria-pressed="${!neg}">${esc(f.signed[1])}</button><input type="hidden" name="${f.key}__sgn" value="${neg ? '-' : '+'}"></span><input id="${id}" name="${f.key}" type="text" inputmode="decimal" class="num" value="${esc(abs)}" placeholder="${esc(f.ph || (f.optional ? 'Not set' : ''))}" autocomplete="off"></div>`;
+  }
   const shown = v == null || v === '' ? '' : (f.type === 'money' ? nf2.format(v).replace(/\.00$/, '') : String(v));
   const mode = f.type === 'text' ? 'text' : 'decimal';
   return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="text" inputmode="${mode}" class="${f.type === 'text' ? 'wide' : 'num'}" value="${esc(shown)}" placeholder="${esc(f.ph || (f.optional ? 'Not set' : ''))}" autocomplete="off">${f.unit ? `<span class="unit">${f.unit}</span>` : ''}</div>`;
@@ -2514,7 +2528,13 @@ function readFields(form, fields) {
     if (f.type === 'toggle') out[f.key] = el.checked;
     else if (f.type === 'text' || f.type === 'select' || f.type === 'date') out[f.key] = el.value || (f.optional ? null : '');
     else if (f.type === 'month') out[f.key] = /^\d{4}-\d{2}/.test(el.value) ? el.value.slice(0, 7) : null;
-    else { const n = parseNum(el.value); out[f.key] = n == null ? (f.optional ? null : 0) : n; }
+    else {
+      let n = parseNum(el.value);
+      // a signed field: the switch gives the sign, unless a minus was typed (on a keyboard that has one)
+      if (f.signed) out[f.key + 'Sign'] = (form.elements[f.key + '__sgn'] || {}).value || '+'; // kept even when the box is blank
+      if (f.signed && n != null && n > 0 && out[f.key + 'Sign'] === '-') n = -n;
+      out[f.key] = n == null ? (f.optional ? null : 0) : n;
+    }
   }
   return out;
 }
@@ -2641,7 +2661,7 @@ function incomeSheet(id, inBundle) {
   const x = id ? flowById(id) : { name: '', owner: data.people[0].id, amount: 0, growth: 0, start: inBundle ? inBundle.start : null, end: null };
   formSheet({
     title: id ? 'Edit income' : 'New income', values: x,
-    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'owner', label: 'Whose', type: 'select', options: ownerOpts() }, { key: 'amount', label: 'Monthly, after tax', type: 'money', unit: '' }, { key: 'growth', label: 'Extra rise each April', type: 'percent', unit: '%', hint: 'On top of the scenario pay rise' }] },
+    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'owner', label: 'Whose', type: 'select', options: ownerOpts() }, { key: 'amount', label: inBundle || x.bundle ? 'Change a month' : 'Monthly, after tax', type: 'money', unit: '', ...(inBundle || x.bundle ? { signed: ['Less', 'More'], hint: 'Less: a drop from usual pay' } : {}) }, { key: 'growth', label: 'Extra rise each April', type: 'percent', unit: '%', hint: 'On top of the scenario pay rise' }] },
     { head: 'When', foot: 'For example, reduced pay during parental leave: add it as its own income with dates, and end the usual pay the month before.', fields: whenFields }],
     extra: id ? destructive('Delete income', 'delete') : '',
     onSave: (v, act) => {

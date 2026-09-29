@@ -658,6 +658,30 @@ try {
   await page.evaluate(p => { const q = data.mortgage.parts.find(x => x.id === p); q.type = 'repayment'; changed(); }, pid0);
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
+  console.log('Amounts that go either way, without a minus key');
+  const sk0 = await page.evaluate(() => { const k = scenarioKey(); data.flows.push({ id: 'win', name: 'Windows', kind: 'oneoff', amount: 19000, start: '2026-11', end: '2026-11', on: false, plan: k, category: 'Receipt', owner: null, inflates: false, growth: 0, bundle: null }); (data.scenarios[k].lines ||= {}).win = { on: true }; changed(); return k; });
+  await page.evaluate(k => actions['sc-line'](k + '|win'), sk0);
+  await page.waitForSelector('.sheet-wrap.open #f_amount');
+  ok(await page.$eval('.sheet-wrap.open #f_amount', el => el.inputMode === 'decimal' && !!el.closest('.field').querySelector('.sgn [data-sgn="-"]')), 'a one-off’s amount has an Out / In switch beside the number pad');
+  await page.fill('.sheet-wrap.open #f_amount', '19000');
+  await page.click('.sheet-wrap.open .sgn [data-sgn="-"]');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(k => data.scenarios[k].lines.win.amount === -19000, sk0);
+  ok(true, 'choosing Out saves it as money out: −19,000');
+  await page.evaluate(k => actions['sc-line'](k + '|win'), sk0);
+  await page.waitForSelector('.sheet-wrap.open #f_amount');
+  ok(await page.$eval('.sheet-wrap.open #f_amount', el => el.value === '19,000' && el.closest('.field').querySelector('.sgn [data-sgn="-"]').classList.contains('on')), 'and opens again as 19,000 with Out chosen');
+  await page.click('.sheet-wrap.open .cancel'); await page.waitForTimeout(400);
+  // blank amount, Out chosen on its own: the amount as set, turned into money out
+  await page.evaluate(k => { delete data.scenarios[k].lines.win.amount; changed(); actions['sc-line'](k + '|win'); }, sk0);
+  await page.waitForSelector('.sheet-wrap.open #f_amount');
+  await page.fill('.sheet-wrap.open #f_amount', ''); await page.click('.sheet-wrap.open .sgn [data-sgn="-"]'); await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(k => data.scenarios[k].lines.win.amount === -19000, sk0);
+  ok(true, 'with the amount left blank, tapping Out alone flips the amount as set');
+  await page.waitForTimeout(400);
+  await page.evaluate(k => { data.flows = data.flows.filter(f => f.id !== 'win'); delete data.scenarios[k].lines.win; changed(); }, sk0);
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
   console.log('Switches, by touch, with motion on');
   const touch = await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })).newPage();
   touch.on('pageerror', e => errors.push(e.message));
