@@ -62,3 +62,34 @@ near(flat[2].mortgagePay, 750, 'flat payment'); assert.strictEqual(flat[2].mortg
 // The Plan budget counts every part
 near(monthlyBudget(practice({ parts: [A, B] })).spend, 1000 + 1300, 'budget includes both parts');
 console.log('All mortgage checks pass ✓');
+
+// ---- repayment vs interest-only, the principal each month, and a payment worked out (v13, Oct 2026) ----
+{
+  const { annuity } = require('../engine.js'), A2 = require('../analysis.js');
+  // Repayment, month 1 by hand: 120000 at 6% paying 1000 → interest 600, principal 400, balance 119600
+  let r = project(practice({ parts: [A] }), 's', 3).rows;
+  near(r[0].mortgageParts[0].principal, 400, 'principal = payment less interest'); near(r[0].mortgagePrincipal, 400, 'total principal');
+  near(r[1].mortgageParts[0].principal, 1000 - 119600 * 0.005, 'month 2: a little more goes to the balance');
+  // Interest only: 120000 at 6% pays 600 a month and the balance stays at 120000; due at the end
+  const IO = { id: 'io', name: 'IO', type: 'interest', payment: null, balance: 120000, rate: 6, termEnd: '2026-09-01' };
+  r = project(practice({ parts: [IO] }), 's', 5).rows;
+  near(r[0].mortgagePay, 600, 'interest-only payment worked out: the interest'); near(r[0].mortgageBal, 120000, 'balance does not fall');
+  near(r[0].mortgageParts[0].principal, 0, 'nothing repaid');
+  assert.strictEqual(r.find(x => x.date === '2026-09-01').mortgageParts[0].due, 120000, 'the balance is due at the term end');
+  assert.strictEqual(mortgageTotals(practice({ parts: [IO] })).payment, 600, 'the budget uses the worked-out payment');
+  // Interest only across a fix end: at the new rate, still just the interest
+  r = project(practice({ parts: [{ ...IO, termEnd: '2040-01-01', fixEnd: '2026-08-01', newRate: 3 }] }), 's', 4).rows;
+  near(r[2].mortgagePay, 300, 'after the fix: 120000 × 3% / 12');
+  // Repayment with the payment left blank: the annuity over the months from the balance update to the end
+  const W = { id: 'w', type: 'repayment', payment: null, balance: 100000, rate: 4, termEnd: '2046-06-01' };
+  r = project(practice({ parts: [W] }), 's', 240).rows;
+  near(r[0].mortgagePay, annuity(100000, 4, 240), 'worked out over 240 months');
+  near(r.at(-1).mortgageBal, 0, 'and it is paid off by the end');
+  // An older file (no type) is repayment and projects exactly as before
+  assert.deepStrictEqual(project(practice({ parts: [{ ...A, type: 'repayment' }] }), 's', 24).rows, project(practice({ parts: [A] }), 's', 24).rows);
+  // The schedule to the end: the principal repaid adds up to what was owed, and every year adds up to its payments
+  const S = A2.mortgageSchedule(practice({ parts: [W] }), 's');
+  near(S.totalPrincipal, 100000, 'every pound repaid'); assert.strictEqual(S.paidOff, '2046-05-01');
+  S.years.forEach(y => near(y.interest + y.principal, y.paid, `${y.year}: interest + repaid = paid`));
+  console.log('  ✓ repayment vs interest-only, principal each month, a payment worked out, the schedule to the end');
+}

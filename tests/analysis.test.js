@@ -35,6 +35,30 @@ assert.strictEqual(Y.nudge, true, 'February, with allowance going unused: nudge'
 assert.strictEqual(A.isaYear(household(), 'flat', '2026-11').nudge, false, 'not in November');
 console.log('  ✓ ISA allowance per person this tax year, with the February nudge');
 
+// ---- ISA allowance tax year by tax year (Oct 2026) ----
+// 2026/27: Me paid in 5,000 before; the projection tops up 6,000 in June then 1,000 a month to March = 15,000 more,
+// filling Me's 20,000. Partner's 20,000 goes unused. 2027/28: 12 × 1,000 = 12,000, all to Me: 8,000 + 20,000 unused.
+const TL = A.isaTimeline(household(), 'flat', 2);
+assert.deepStrictEqual(TL.years.map(y => y.label), ['2026/27', '2027/28']);
+const [y1, y2] = TL.years;
+assert.deepStrictEqual([y1.allowance, y1.before, y1.planned, y1.unused, y1.used], [40000, 5000, 15000, 20000, 20000], 'this year');
+assert.deepStrictEqual(y1.people.map(p => [p.person, p.before, p.planned, p.unused]), [['M', 5000, 15000, 0], ['C', 0, 0, 20000]], 'per person');
+assert.strictEqual(y1.partial, true, 'the projection starts in June, part way through the year');
+near(y1.months[0].cumulative, 11000, 'June: 5,000 before + 6,000'); near(y1.months.at(-1).cumulative, 20000, 'March: 20,000');
+near(y1.extraPerMonth, 20000 / 10, 'using the rest: 20,000 over the 10 months left');
+assert.strictEqual(y1.filledBy, null, 'the household allowance is not filled');
+assert.deepStrictEqual([y2.before, y2.planned, y2.unused], [0, 12000, 28000], 'next year');
+near(TL.lost, 48000, 'unused over both years');
+// with a bigger surplus (4,000 a month), next year fills
+const richer = household({ flows: [{ id: 'bonus', name: 'Extra', kind: 'income', amount: 3000, owner: 'M' }] }); // surplus 4,000 a month
+const T2 = A.isaTimeline(richer, 'flat', 2).years[1];
+// 2026/27 has only 35,000 of room (Me 15,000 + Partner 20,000) against 9,000 + 9 × 4,000 = 45,000 above the floor, so
+// 10,000 is still sitting in cash in April: 10,000 + 4,000 go in then, 4,000 a month after - 42,000 by November
+assert.strictEqual(T2.filledBy, '2027-11-01', 'full by November 2027');
+near(T2.months[0].newAllowance, 14000, 'April: the cash held back plus that month');
+assert.strictEqual(T2.unused, 0);
+console.log('  ✓ ISA allowance tax year by tax year: paid in, planned, unused, month by month, what it would take');
+
 // ---- 3.2 a goal: £60,000 in the two ISAs by May 2027 ----
 // Cash ISA by May 2027: 10,000 + 6,000 + 11 × 1,000 = 27,000 (the allowance resets in April); S&S stays 30,000 (no growth).
 const goal = { id: 'g', name: 'Overpayment pot', target: 60000, date: '2027-05', accounts: ['cisa', 'ss'] };

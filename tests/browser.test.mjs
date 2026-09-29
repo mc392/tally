@@ -49,7 +49,9 @@ let passed = 0;
 const ok = (c, m) => { assert.ok(c, m); passed++; console.log('  ✓ ' + m); };
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
 try {
-  const ctx = await browser.newContext();
+  // reduced motion: headline figures count up and switches wait for their knob when motion is on, which would make
+  // reading the screen straight after a tap racy. The switches are also tested with motion on, by touch, below.
+  const ctx = await browser.newContext({ reducedMotion: 'reduce' });
   const page = await ctx.newPage();
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.addInitScript(fakeFs, JSON.stringify(sample));
@@ -124,7 +126,7 @@ try {
   await page.click('[data-act="private"]');
 
   console.log('Opening on a new device');
-  const page2 = await (await browser.newContext()).newPage();
+  const page2 = await (await browser.newContext({ reducedMotion: 'reduce' })).newPage();
   page2.on('pageerror', e => errors.push(e.message));
   await page2.addInitScript(fakeFs, raw);
   await page2.goto(url);
@@ -627,6 +629,55 @@ try {
   ok(await page.evaluate(k => project(data, scenarioKey(), 60).rows.find(x => x.k === k).mortgageParts[0].rate === 5, fixK), '“Flat” puts the mortgage back on its entered rate after the fix');
   await page.evaluate(o => { data.scenarios[scenarioKey()].rates = { kind: 'market' }; data.scenarios[scenarioKey()].mortgage = o; for (const a of data.accounts) delete a.rateModel; for (const p of data.mortgage.parts) delete p.rateModel; changed(); }, optWas);
   await waitSaved();
+
+  console.log('ISA allowance, the mortgage paid down, tools at the top');
+  await page.evaluate(() => { ui.tab = 'projection'; ui.stacks.projection = []; render({ top: true }); });
+  await page.waitForSelector('#main .tools .tool');
+  ok(await page.evaluate(() => { const t = document.querySelector('#main .tools'), m = [...document.querySelectorAll('#main .gh')].find(x => x.textContent.startsWith('Month by month')); return t && m && t.getBoundingClientRect().top < m.getBoundingClientRect().top && document.querySelectorAll('#main [data-arg^="month:"]').length <= 12; }), 'Projection’s options are at the top, above a month list folded to 12');
+  await page.click('#main .tools [data-arg="isayear"]');
+  await page.waitForSelector('#main .rings .ring');
+  ok(await page.evaluate(() => { const T = TallyAnalysis.isaTimeline(data, scenarioKey(), 5); return document.querySelectorAll('#main .ybars .ycol').length === T.years.length && document.querySelector('#main .mchart polyline') && document.getElementById('c-isapot'); }), 'ISA allowance: rings, tax year by tax year, this year month by month, the pot');
+  await page.click('#main [data-act="isa-years"][data-arg="10"]');
+  await page.waitForFunction(() => document.querySelectorAll('#main .ybars .ycol').length === 10);
+  ok(true, 'ten tax years on request');
+  await page.evaluate(() => { ui.tab = 'home'; ui.stacks.home = []; render({ top: true }); });
+  ok(await page.evaluate(() => !!document.querySelector('#main .tapcard[data-arg="isayear"] .abar')), 'Overview shows this year’s allowance');
+  await page.evaluate(() => { ui.tab = 'plan'; ui.stacks.plan = []; render({ top: true }); });
+  ok(await page.evaluate(() => { const c = document.querySelector('#main .plancards'), s = document.querySelector('#main .stats'); return c && s && c.getBoundingClientRect().top < s.getBoundingClientRect().top && c.querySelectorAll('.plancard').length >= Object.keys(data.scenarios).length + 1; }), 'the Plan tab opens with the plans, as cards, at the top');
+  // the mortgage: interest-only, then repayment with the payment left blank
+  const pid0 = await page.evaluate(() => data.mortgage.parts[0].id);
+  await page.evaluate(() => actions.push('mortgage'));
+  await page.waitForSelector('#main #c-mort');
+  ok(await page.evaluate(() => { const S = TallyAnalysis.mortgageSchedule(data, scenarioKey()); return document.querySelectorAll('#main .ybars.thin .ycol').length === S.years.length && S.totalPrincipal > 0; }), 'the balance paid down to the end, and each year’s interest against repayment');
+  await page.click(`#main [data-act="edit-part"][data-arg="${pid0}"]`);
+  await page.waitForSelector('.sheet-wrap.open #f_type');
+  await page.selectOption('.sheet-wrap.open #f_type', 'interest'); await page.fill('.sheet-wrap.open #f_payment', '');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(p => data.mortgage.parts.find(x => x.id === p).type === 'interest', pid0);
+  ok(await page.evaluate(p => { const q = data.mortgage.parts.find(x => x.id === p), r = project(data, scenarioKey(), 3).rows[0].mortgageParts.find(x => x.id === p); return Math.abs(r.pay - q.balance * q.rate / 1200) < 0.01 && r.principal === 0; }, pid0), 'interest only: the payment is the interest and nothing is repaid');
+  await page.evaluate(p => { const q = data.mortgage.parts.find(x => x.id === p); q.type = 'repayment'; changed(); }, pid0);
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
+  console.log('Switches, by touch, with motion on');
+  const touch = await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })).newPage();
+  touch.on('pageerror', e => errors.push(e.message));
+  await touch.addInitScript(fakeFs, JSON.stringify(sample));
+  await touch.goto(url); await touch.click('button[data-act="new-file"]');
+  await touch.waitForFunction(() => typeof data !== 'undefined' && data && data.scenarios);
+  const tk = await touch.evaluate(() => { const k = Object.keys(data.scenarios)[0]; actions.push('scenario:' + k); return k; });
+  {
+    await touch.waitForSelector(`#main [data-chg="sc-growth"]`);
+    const g0 = await touch.evaluate(k => data.scenarios[k].growth, tk);
+    const box = await (await touch.$(`#main [data-chg="sc-growth"]`)).evaluate(el => { const r = el.closest('.switch').getBoundingClientRect(); return { x: r.right - 6, y: r.top + r.height / 2 }; });
+    await touch.touchscreen.tap(box.x, box.y);
+    await touch.waitForFunction(([k, g]) => data.scenarios[k].growth !== g, [tk, g0], { timeout: 3000 });
+    ok(true, 'a tap on the far edge of a switch flips it');
+    const lab = await touch.$eval(`#main [data-chg="sc-growth"]`, el => { const r = el.closest('.row').querySelector('.ttl').getBoundingClientRect(); return { x: r.left + 10, y: r.top + r.height / 2 }; });
+    await touch.touchscreen.tap(lab.x, lab.y);
+    await touch.waitForFunction(([k, g]) => data.scenarios[k].growth === g, [tk, g0], { timeout: 3000 });
+    ok(true, 'a tap on the row’s words flips it too');
+  }
+  await touch.close();
 
   console.log('Newer files');
   const refused = await page.evaluate(async () => { const f = JSON.stringify({ app: 'tally', version: TallyModel.VERSION + 1, accounts: [], snapshots: [] }); return await loadText(f, 'future.json'); });

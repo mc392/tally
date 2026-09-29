@@ -75,13 +75,16 @@
 //   scenarios[k].lines (v12) - {flowId: {on?, amount?, start?, end?}}: this plan's own version of a line - switched on
 //              or off, a different monthly amount (a one-off: its total), different months. Absent = as the line is set.
 //              A line added "only in this plan" is saved switched off with this plan switching it on.
+//   mortgage.parts[].type (v13) - 'repayment' (the default: each payment pays the balance down) or 'interest'
+//              (interest-only: the payment is the interest and the balance is due at termEnd). A part's payment may be
+//              left blank and is then worked out from balance, rate and term.
 //   scenarios[k].mortgage (v12) - {partId: {path:'as'|'float'|'fix'|'deal', rate?, years?, option?}}: what this plan
 //              does with each part at its fix end. v11's single scenarios[k].option moves here on upgrade.
 //   scenarios[k].rates - {kind:'market'|'shift'|'twist'|'flat'|'anchor'|'manual'|'history', ...its settings}.
 //   rateBasis - {source, asOf, curve, previous?}: the Bank of England curve this file's projections use, kept in the
 //              file so any projection can be re-run offline and "as at" the curve it was made with. Public data.
 const TallyModel = (() => {
-  const VERSION = 12;
+  const VERSION = 13;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -154,6 +157,8 @@ const TallyModel = (() => {
     d.flows ||= [];
     d.bundles ||= [];
     d.remortgageOptions ||= [];
+    // v13: each mortgage part says whether it is repayment or interest-only; every part before was repayment
+    for (const p of ((d.mortgage || {}).parts || [])) p.type ||= 'repayment';
     d.goals ||= [];
     d.reviews ||= {};
     d.transactions ||= []; d.imports ||= []; d.categoryRules ||= []; d.categoryMap ||= {};

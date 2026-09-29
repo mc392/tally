@@ -141,4 +141,11 @@ assert.strictEqual(m11.rateBasis, null, 'no curve until one is chosen');
 assert.ok(m11.accounts.every(a => !('rateModel' in a)), 'no account is moved onto market rates by the upgrade');
 assert.deepStrictEqual(project(m11, "s", 36).rows, flatRows, 'identical to the old engine');
 console.log('  ✓ version 11: every scenario on market rates, no account moved onto them, figures identical');
+// ---------- 7. version 13: every mortgage part says repayment or interest-only; older parts are repayment ----------
+const withParts = () => ({ ...base(), version: 12, mortgage: { parts: [{ id: 'main', payment: 1100, balance: 190000, rate: 4.2, fixEnd: '2027-05-01', newRate: 5, termEnd: '2049-01-01' }] } });
+const m13 = TM.migrate(withParts());
+assert.ok(m13.mortgage.parts.every(p => p.type === 'repayment'), 'an older part is repayment');
+const v12 = withParts(); v12.version = TM.VERSION;
+assert.deepStrictEqual(project(m13, 's', 36).rows, project(v12, 's', 36).rows, 'and projects exactly as without the field');
+console.log('  ✓ version 13: mortgage parts default to repayment, figures unchanged');
 console.log('All migration checks pass ✓');

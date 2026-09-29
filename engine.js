@@ -36,15 +36,29 @@ function annuity(bal, ratePct, n) {
 function mortgageParts(data) {
   const m = data.mortgage || {};
   if (Array.isArray(m.parts)) return m.parts;
-  return [{ id: 'main', payment: m.payment, balance: m.balance, rate: m.rate, fixEnd: m.fixEnd, newRate: m.newRate, termEnd: m.termEnd }];
+  return [{ id: 'main', payment: m.payment, balance: m.balance, rate: m.rate, fixEnd: m.fixEnd, newRate: m.newRate, termEnd: m.termEnd, type: m.type }];
 }
 const isSet = v => v != null && v !== '';
+// Repayment or interest-only (v13; absent = repayment, which is what every part was before).
+const partType = p => (p && p.type === 'interest' ? 'interest' : 'repayment');
+// The monthly payment for a part: interest-only pays the interest; repayment the annuity over n months left
+// (null when there is no term to work it out over).
+const payFor = (p, bal, ratePct, n) => (p.type === 'interest' ? bal * ratePct / 1200 : n != null ? annuity(bal, ratePct, n) : null);
+// A part's monthly payment: as entered, or (left blank) worked out from its balance, rate and the months from the
+// latest balance update to its end date - the same figure the projection starts from.
+function partPay(data, p) {
+  if (+p.payment) return +p.payment;
+  if (!isSet(p.balance) || !isSet(p.rate)) return 0;
+  const d = (data.snapshots || []).reduce((m, s) => (s.date > m ? s.date : m), ''), from = d ? ymKey(ym(d).y, ym(d).m) : null;
+  const n = p.termEnd && from != null ? ymKey(ym(p.termEnd).y, ym(p.termEnd).m) - from : null;
+  return payFor({ type: partType(p) }, +p.balance, +p.rate, n) || 0;
+}
 function mortgageTotals(data) {
   const parts = mortgageParts(data);
   const withBal = parts.filter(p => isSet(p.balance));
   return {
     parts,
-    payment: parts.reduce((s, p) => s + (+p.payment || 0), 0),
+    payment: parts.reduce((s, p) => s + partPay(data, p), 0),
     balance: withBal.length ? withBal.reduce((s, p) => s + +p.balance, 0) : null, // null = no balance entered anywhere
     allBalances: withBal.length === parts.length,
   };
@@ -234,12 +248,20 @@ function project(data, scenarioKey, months, opts = {}) {
   const ssShare = Math.min(100, Math.max(0, +r.sweepToSS || 0)) / 100;
 
   // Each part runs on its own: its own balance, rate, and a payment recalculated when its fix ends.
+  // Repayment (the default): each payment is interest first, the rest pays the balance down; a new payment is the
+  // annuity over what is left of the term. Interest-only (v13): the payment is the interest, the balance stays and is
+  // due at the term end (flagged on the row as `due`, not taken from savings). A payment left blank is worked out
+  // from the balance, rate and term.
   const mk = d => d ? ymKey(ym(d).y, ym(d).m) : null;
-  const parts = mortgageParts(data).map(p => ({
-    id: p.id, name: p.name, bal: isSet(p.balance) ? +p.balance : null, pay: +p.payment || 0,
-    rate: isSet(p.rate) ? +p.rate : null, newRate: isSet(p.newRate) ? +p.newRate : null, fixEndK: mk(p.fixEnd), termEndK: mk(p.termEnd),
-    path: partPaths[p.id] || null, last: partPaths[p.id] ? partPaths[p.id].rates[0] : null,
-  }));
+  const parts = mortgageParts(data).map(p => {
+    const x = {
+      id: p.id, name: p.name, type: partType(p), bal: isSet(p.balance) ? +p.balance : null, pay: +p.payment || 0,
+      rate: isSet(p.rate) ? +p.rate : null, newRate: isSet(p.newRate) ? +p.newRate : null, fixEndK: mk(p.fixEnd), termEndK: mk(p.termEnd),
+      path: partPaths[p.id] || null, last: partPaths[p.id] ? partPaths[p.id].rates[0] : null,
+    };
+    if (!x.pay && x.bal != null && x.rate != null) x.pay = payFor(x, x.bal, x.rate, x.termEndK != null ? x.termEndK - k0 : null) || 0;
+    return x;
+  });
   const anyBal = parts.some(p => p.bal != null);
   // The scenario's chosen remortgage option (1.6), applied to its part from the part's fix end.
   const shift = +sc.rateShift || 0;
@@ -338,7 +360,7 @@ function project(data, scenarioKey, months, opts = {}) {
         p.rate = (+opt.rate || 0) + (opt.type === 'tracker' ? shift : 0);
         p.fixEndK = opt.type === 'tracker' ? null : k + Math.max(0, Math.round(+opt.fixMonths || 0));
         p.newRate = (opt.afterRate != null && opt.afterRate !== '' ? +opt.afterRate : +opt.rate || 0) + shift;
-        p.pay = annuity(p.bal, p.rate, p.termEndK - k);
+        p.pay = payFor(p, p.bal, p.rate, p.termEndK - k);
         p.deal = { from: k, regular: +opt.regular || 0, capPct: capPctOf(opt), capLeft: 0 };
       }
       let rate = null, repriced = false;
@@ -346,12 +368,12 @@ function project(data, scenarioKey, months, opts = {}) {
       if (onPath) {
         // market rates: this month's rate from the path; the payment is worked out again whenever it changes
         rate = p.path.rates[i];
-        if (Math.abs(rate - p.last) > 1e-12) { repriced = true; if (p.termEndK != null) p.pay = annuity(p.bal, rate, p.termEndK - k); }
+        if (Math.abs(rate - p.last) > 1e-12) { repriced = true; const n = p.termEndK != null ? p.termEndK - k : null; if (n != null || p.type === 'interest') p.pay = payFor(p, p.bal, rate, n); }
         p.last = rate;
       }
       if (p.bal != null && p.rate != null) {
         if (rate == null) {
-          if (p.fixEndK != null && k === p.fixEndK && p.newRate != null && p.termEndK != null) p.pay = annuity(p.bal, p.newRate, p.termEndK - k);
+          if (p.fixEndK != null && k === p.fixEndK && p.newRate != null && (p.termEndK != null || p.type === 'interest')) p.pay = payFor(p, p.bal, p.newRate, p.termEndK != null ? p.termEndK - k : null);
           rate = p.fixEndK != null && k >= p.fixEndK && p.newRate != null ? p.newRate : p.rate;
         }
         interest = p.bal * rate / 100 / 12;
@@ -362,9 +384,11 @@ function project(data, scenarioKey, months, opts = {}) {
           over = Math.min(p.deal.regular, p.deal.capLeft, p.bal); p.bal -= over; p.deal.capLeft -= over; dealCash += over;
         }
       }
-      return { id: p.id, name: p.name, pay: paid, interest, bal: p.bal, over, rate, repriced, why: onPath ? p.path.why[i] : null };
+      // principal: what this month's payment (and any overpayment) took off the balance
+      const due = p.type === 'interest' && p.termEndK != null && k === p.termEndK && p.bal > 0.5 ? p.bal : 0;
+      return { id: p.id, name: p.name, type: p.type, pay: paid, interest, principal: Math.max(0, paid - interest) + over, bal: p.bal, over, rate, repriced, due, why: onPath ? p.path.why[i] : null };
     });
-    const mPay = mParts.reduce((s, p) => s + p.pay, 0), mortgageInterest = mParts.reduce((s, p) => s + p.interest, 0);
+    const mPay = mParts.reduce((s, p) => s + p.pay, 0), mortgageInterest = mParts.reduce((s, p) => s + p.interest, 0), mortgagePrincipal = mParts.reduce((s, p) => s + p.principal, 0);
     const mBal = anyBal ? mParts.reduce((s, p) => s + (p.bal || 0), 0) : null;
 
     const live = flows.filter(f => EM.flowActive(f, k));
@@ -445,7 +469,7 @@ function project(data, scenarioKey, months, opts = {}) {
       isaSS, isaCash: isaCash + heldTotal, isaCashFlex: isaCash, isa: isaSS + isaCash + heldTotal, growth, other: otherTotal,
       byAccess, earmark: sumBy(earmarkBy), earmarkBy,
       accounts: { ...other, ...heldIsa }, // month-end balance of each account tracked on its own (savings, pensions, debts, fixed/notice cash ISAs)
-      mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgageParts: mParts, dealCash,
+      mortgageBal: mBal, mortgagePay: mPay, mortgageInterest, mortgagePrincipal, mortgageParts: mParts, dealCash,
       rates, cashIsaRate: poolRate, interest: interestBy, market, closed,
       net: cash + isaSS + isaCash + heldTotal + otherTotal,
     });
@@ -606,4 +630,4 @@ function rateImpact(data, sk, months) {
   return { runs, items, totals, layers: Object.fromEntries(L.map(l => [l, runs[l].rateLayer])), dates: runs.setup.rows.map(r => r.date) };
 }
 
-if (typeof module !== 'undefined') module.exports = { rateImpact, marketFix, project, snapshotTotals, latestSnapshot, balanceOn, positionOn, observations, latestDate, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };
+if (typeof module !== 'undefined') module.exports = { partType, payFor, partPay, rateImpact, marketFix, project, snapshotTotals, latestSnapshot, balanceOn, positionOn, observations, latestDate, monthlyBudget, mortgageParts, mortgageTotals, readiness, amortise, annuity, projectAs, drift, amountAt, compareOptions, rateGrid, availableSeries, GROUPS };

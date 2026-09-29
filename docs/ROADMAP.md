@@ -237,6 +237,8 @@ The period up to the remortgage decision needs the most accuracy.
 > **Also done:** a full balance update can leave any account out with a tick; history charts start at your first own update and count each account only from its first balance; Spending insights - spending, money in, or both, by month and by category, shop or account, over 3, 6 or 12 months, the tax year or everything, with what's changing, the largest items and the transactions behind every figure.
 >
 > **Also done:** plans with their own paths - add, copy and delete plans; in each, what happens to every mortgage part at its fix end (float, fix again at a rate or at the market price, or a saved deal), which life events happen, and its own version of any income or spending line, or lines only it has. Compare plans is a gallery of 17 charts to choose from. Figures hide every time you come back to the app.
+>
+> **Also done (Oct 2026):** ISA allowance tax year by tax year, with rings, columns, this year month by month and what it would take to use it; the mortgage paid down to the end (repayment or interest only, a payment worked out if left blank, each year's interest against repayment); options at the top of Projection and Plan; animations on arrival; switches that respond to every tap.
 
 ## Phase 2: Transactions and spend analysis
 

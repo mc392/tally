@@ -8,7 +8,7 @@
 //   monteCarlo      - a range of outcomes (4.1), seeded so it can be tested and repeated
 //   comparePlans    - plans run side by side, and every figure the comparison charts draw (Sep 2026)
 const TallyAnalysis = (() => {
-  const E = typeof project !== 'undefined' ? { project, latestSnapshot, snapshotTotals, readiness, mortgageParts, positionOn, observations, balanceOn, availableSeries } : require('./engine.js');
+  const E = typeof project !== 'undefined' ? { project, latestSnapshot, snapshotTotals, readiness, mortgageParts, positionOn, observations, balanceOn, availableSeries, partType } : require('./engine.js');
   const M = typeof TallyModel !== 'undefined' ? TallyModel : require('./model.js');
   const LIAB = new Set(['card_0', 'tax']); // everyday credit cards sit with cash, as in the projection
   const INVEST = new Set(['ss_isa', 'pension']);
@@ -231,6 +231,65 @@ const TallyAnalysis = (() => {
     return out.sort((x, y) => y.to.localeCompare(x.to));
   }
 
+  // ---------- ISA allowance over time (Oct 2026) ----------
+  // Tax year by tax year (a tax year is named by the year it starts, 6 April): each person's allowance, what was
+  // paid in before the projection starts (the Rules figure - this tax year only), what the projection tops up, and
+  // what goes unused. Allowance cannot be carried forward, so "unused" is lost for good. Re-deposit room (money taken
+  // out of a flexible ISA going back in) is not new allowance and is not counted as using it.
+  const tyOfK = k => { const y = Math.floor(k / 12), m = k % 12 + 1; return m >= 4 ? y : y - 1; };
+  function isaTimeline(data, sk, years = 5) {
+    const r = data.rules || {}, per = +r.isaPerPerson || 0, who = r.isaFillOrder || [];
+    const snap = E.latestSnapshot(data); if (!snap || !who.length) return null;
+    const k0 = snapK(snap.date), ty0 = tyOfK(k0), endK = M.monthKey(`${ty0 + years}-03`);
+    const rows = E.project(data, sk, endK - k0 + 1).rows;
+    const out = [];
+    for (let ty = ty0; ty < ty0 + years; ty++) {
+      const yr = rows.filter(x => x.taxYear === ty); if (!yr.length) continue;
+      const last = yr.at(-1), first = ty === ty0;
+      const people = who.map(p => {
+        const before = first && +r.isaUsedTaxYear === ty ? Math.min(per, +(r.isaUsedBy || {})[p] || 0) : 0;
+        const start = per - before, left = Math.max(0, last.freshBy[p] ?? start);
+        return { person: p, allowance: per, before, planned: Math.max(0, start - left), unused: left };
+      });
+      const allowance = per * who.length, before = people.reduce((s, x) => s + x.before, 0);
+      let cum = before;
+      const months = yr.map(x => { const inNew = Math.max(0, x.freshStart - x.freshEnd); cum += inNew; return { date: x.date, k: x.k, topUp: x.topUp, newAllowance: inNew, cumulative: cum, withdraw: x.withdraw }; });
+      const planned = people.reduce((s, x) => s + x.planned, 0), unused = people.reduce((s, x) => s + x.unused, 0);
+      const full = months.find(m => m.cumulative >= allowance - 0.5);
+      // what would use it all: the unused amount spread over the months the projection has left in the year
+      out.push({ taxYear: ty, label: `${ty}/${String(ty + 1).slice(2)}`, partial: first && k0 % 12 + 1 !== 4, allowance, before, planned, unused, used: before + planned,
+        people, months, filledBy: full ? full.date : null, extraPerMonth: unused > 0.5 ? unused / months.length : 0 });
+    }
+    const pot = rows.map(x => ({ date: x.date, isa: x.isa, ss: x.isaSS, cash: x.isaCash }));
+    return { years: out, pot, per, who, lost: out.reduce((s, y) => s + y.unused, 0), start: snap.date };
+  }
+
+  // ---------- the mortgage to the end of its term (Oct 2026) ----------
+  // The household projection run to the last part's term end (capped at 40 years): the balance month by month, and
+  // each calendar year's interest and repayment of what is owed (principal), so you can see the balance being paid
+  // down, not just the payment going out. Interest-only parts flag the balance due at their term end.
+  function mortgageSchedule(data, sk, maxMonths = 480) {
+    const snap = E.latestSnapshot(data); if (!snap) return null;
+    const parts = E.mortgageParts(data), k0 = snapK(snap.date);
+    const ends = parts.map(p => (p.termEnd ? M.monthKey(M.month(p.termEnd)) : null)).filter(x => x != null);
+    const months = Math.max(12, Math.min(maxMonths, ends.length ? Math.max(...ends) - k0 + 1 : 300));
+    const rows = E.project(data, sk, months).rows;
+    if (!rows.length || rows[0].mortgageBal == null) return { none: true };
+    const years = {}; let totalInterest = 0, totalPrincipal = 0; const due = [];
+    for (const x of rows) {
+      const y = x.date.slice(0, 4), Y = years[y] ||= { year: +y, interest: 0, principal: 0, paid: 0, balance: 0, months: 0 };
+      Y.interest += x.mortgageInterest; Y.principal += x.mortgagePrincipal || 0; Y.paid += x.mortgagePay; Y.balance = x.mortgageBal; Y.months++;
+      totalInterest += x.mortgageInterest; totalPrincipal += x.mortgagePrincipal || 0;
+      for (const p of x.mortgageParts) if (p.due) due.push({ date: x.date, part: p.id, name: p.name, amount: p.due });
+    }
+    const off = rows.find(x => x.mortgageBal < 0.5), n12 = rows.slice(0, 12);
+    return {
+      rows: rows.map(x => ({ date: x.date, k: x.k, bal: x.mortgageBal, pay: x.mortgagePay, interest: x.mortgageInterest, principal: x.mortgagePrincipal || 0, parts: x.mortgageParts.map(p => ({ id: p.id, bal: p.bal })) })),
+      years: Object.values(years), start: rows[0].mortgageBal + (rows[0].mortgagePrincipal || 0), totalInterest, totalPrincipal,
+      paidOff: off ? off.date : null, due, next12: { interest: n12.reduce((s, x) => s + x.mortgageInterest, 0), principal: n12.reduce((s, x) => s + (x.mortgagePrincipal || 0), 0) },
+    };
+  }
+
   // ---------- comparing plans (Sep 2026) ----------
   // Each plan run on its own over `months`, and the figures the comparison charts draw, so the screen only draws.
   // at: the row index the "at a date" charts read. All money is month-end; interest is a running total from the start.
@@ -277,7 +336,7 @@ const TallyAnalysis = (() => {
     return { plans, n, at: j, date: n ? plans[0].rows[j].date : null, floor, mix, why, score };
   }
 
-  return { comparePlans, checks, realValue, isaYear, goalStatus, goalValueAt, attribution, STRESSES, stressed, monteCarlo, rng, normals };
+  return { isaTimeline, mortgageSchedule, comparePlans, checks, realValue, isaYear, goalStatus, goalValueAt, attribution, STRESSES, stressed, monteCarlo, rng, normals };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyAnalysis;
