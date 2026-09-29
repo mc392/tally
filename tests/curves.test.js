@@ -112,6 +112,19 @@ function household(o = {}) {
   console.log('  ✓ mortgage payments recalculate at each repricing; the balance matches an independent amortisation');
 }
 
+// ---------- A plan's own mortgage path on market rates (v12) ----------
+{
+  const part = { id: 'main', payment: 1000, balance: 150000, rate: 2, fixEnd: '2026-07', newRate: 7, termEnd: '2046-01', rateModel: { kind: 'fixed', rollover: { kind: 'refix', termMonths: 24, margin: 0.5 }, passThrough: 0.9, lagMonths: 1 } };
+  const rows = (rm, mortgage) => { const d = household({ parts: [{ ...part, rateModel: rm }] }); d.scenarios.s.mortgage = mortgage || {}; return E.project(d, 's', 48).rows.map(r => r.mortgageParts[0]); };
+  // floating in the plan = the same part set to roll onto its variable rule
+  assert.deepStrictEqual(rows(part.rateModel, { main: { path: 'float' } }), rows({ ...part.rateModel, rollover: { ...part.rateModel.rollover, kind: 'variable' } }), 'float: onto the variable rule at the fix end');
+  // fixing again with no rate entered = a market-priced refix for that many years
+  const V = { ...part.rateModel, rollover: { kind: 'variable', margin: 0.5 } };
+  assert.deepStrictEqual(rows(V, { main: { path: 'fix', years: 2 } }), rows({ ...V, rollover: { kind: 'refix', margin: 0.5, termMonths: 24 } }), 'fix at market: a 2-year refix priced from the curve');
+  assert.notDeepStrictEqual(rows(part.rateModel, { main: { path: 'float' } }), rows(part.rateModel), 'and the two paths really differ');
+  console.log('  ✓ a plan can float or refix a market-rate part without changing the part itself');
+}
+
 // ---------- Rollover choices ----------
 {
   const L = layer(hump);
