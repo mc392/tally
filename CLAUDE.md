@@ -160,6 +160,11 @@ A mortgage is a list of **parts** (UK sub-accounts: e.g. the original loan plus 
 - **A row whose only job is its switch flips it from anywhere on the row** (`row()` marks it `.swrow`; the document click handler flips the input and fires `change`), as in iOS Settings.
 - **The change is applied ~200ms after the tap**, per switch, so the knob is seen sliding before the page redraws and replaces it; with reduced motion it is immediate. Tests: `Switches, by touch, with motion on` in the browser suite taps the far edge of a switch and the row's words with a real touch.
 
+## Swipe back (Oct 2026)
+- A touch that starts within 30px of the left edge (`EDGE`) of a page with somewhere to go back to drags the page with the finger, with the page underneath (`swipeUnder()`: drawn by `currentView()` with the stack popped, so it is exactly what Back shows) sliding in from −30%. Let go past a third of the width, or a flick faster than 0.45px/ms, and it goes back; otherwise it springs back. A mostly vertical move is a scroll; nothing happens with a sheet open.
+- **With nothing to go back to, a sideways edge swipe is still held** (`preventDefault`), so a browser with its own edge-swipe back (Chrome on Android) cannot take you out of the app. Safari in a browser tab keeps its own gesture, which JS cannot stop; the installed app and the iOS shell have none, so this one is theirs.
+- Tested with real touch input through Chromium's input pipeline (`Input.dispatchTouchEvent`): a full swipe, a short one, a vertical drag, one away from the edge, and one with nothing to go back to.
+
 ## Projection rules (from the original spreadsheet)
 Monthly: cash + surplus + one-off items. Above the cash floor → sweep into ISAs up to (new allowance + flexible re-deposit room). Below → withdraw from ISAs (cash ISAs first); withdrawals add re-deposit room for the rest of that tax year. Allowance resets each April. Growth optional per scenario.
 
