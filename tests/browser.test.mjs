@@ -330,6 +330,10 @@ try {
   await page.evaluate(k => { try { localStorage.removeItem('tally-cmp-charts'); } catch (e) { } actions['cmp-with'](k); }, nk);
   await page.waitForSelector('#c-pl-net');
   ok(await page.evaluate(() => ['c-pl-net', 'c-pl-diff', 'c-pl-pay', 'c-pl-cash', 'c-pl-left'].every(id => document.getElementById(id)) && document.querySelector('#main .hbars') && document.querySelector('#main .score')), 'the default charts: over time, where the money is, why they differ, the scorecard');
+  // someone who chose their charts before the ISA ones existed still gets the ISA ones the defaults include
+  await page.evaluate(() => { localStorage.setItem('tally-cmp-charts', JSON.stringify(['net', 'diff'])); render(); });
+  ok(await page.evaluate(() => !!document.querySelector('#main .ybars.cmpy') && !!document.querySelector('#main .cmpwrap table.cmp th') && !document.getElementById('c-pl-pay')), 'a chart choice saved before the ISA charts existed: theirs, plus the ISA allowance charts');
+  await page.evaluate(() => { localStorage.removeItem('tally-cmp-charts'); render(); });
   await page.click('#main [data-act="cmp-charts"]');
   await page.waitForSelector('.sheet-wrap.open #f_interest');
   await page.click('.sheet-wrap.open #f_interest'); await page.click('.sheet-wrap.open #f_marks');
@@ -658,6 +662,30 @@ try {
   await page.evaluate(p => { const q = data.mortgage.parts.find(x => x.id === p); q.type = 'repayment'; changed(); }, pid0);
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
+  console.log('Amounts that go either way, without a minus key');
+  const sk0 = await page.evaluate(() => { const k = scenarioKey(); data.flows.push({ id: 'win', name: 'Windows', kind: 'oneoff', amount: 19000, start: '2026-11', end: '2026-11', on: false, plan: k, category: 'Receipt', owner: null, inflates: false, growth: 0, bundle: null }); (data.scenarios[k].lines ||= {}).win = { on: true }; changed(); return k; });
+  await page.evaluate(k => actions['sc-line'](k + '|win'), sk0);
+  await page.waitForSelector('.sheet-wrap.open #f_amount');
+  ok(await page.$eval('.sheet-wrap.open #f_amount', el => el.inputMode === 'decimal' && !!el.closest('.field').querySelector('.sgn [data-sgn="-"]')), 'a one-off’s amount has an Out / In switch beside the number pad');
+  await page.fill('.sheet-wrap.open #f_amount', '19000');
+  await page.click('.sheet-wrap.open .sgn [data-sgn="-"]');
+  await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(k => data.scenarios[k].lines.win.amount === -19000, sk0);
+  ok(true, 'choosing Out saves it as money out: −19,000');
+  await page.evaluate(k => actions['sc-line'](k + '|win'), sk0);
+  await page.waitForSelector('.sheet-wrap.open #f_amount');
+  ok(await page.$eval('.sheet-wrap.open #f_amount', el => el.value === '19,000' && el.closest('.field').querySelector('.sgn [data-sgn="-"]').classList.contains('on')), 'and opens again as 19,000 with Out chosen');
+  await page.click('.sheet-wrap.open .cancel'); await page.waitForTimeout(400);
+  // blank amount, Out chosen on its own: the amount as set, turned into money out
+  await page.evaluate(k => { delete data.scenarios[k].lines.win.amount; changed(); actions['sc-line'](k + '|win'); }, sk0);
+  await page.waitForSelector('.sheet-wrap.open #f_amount');
+  await page.fill('.sheet-wrap.open #f_amount', ''); await page.click('.sheet-wrap.open .sgn [data-sgn="-"]'); await page.click('.sheet-wrap.open .done');
+  await page.waitForFunction(k => data.scenarios[k].lines.win.amount === -19000, sk0);
+  ok(true, 'with the amount left blank, tapping Out alone flips the amount as set');
+  await page.waitForTimeout(400);
+  await page.evaluate(k => { data.flows = data.flows.filter(f => f.id !== 'win'); delete data.scenarios[k].lines.win; changed(); }, sk0);
+  await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+
   console.log('Switches, by touch, with motion on');
   const touch = await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })).newPage();
   touch.on('pageerror', e => errors.push(e.message));
@@ -667,6 +695,8 @@ try {
   const tk = await touch.evaluate(() => { const k = Object.keys(data.scenarios)[0]; actions.push('scenario:' + k); return k; });
   {
     await touch.waitForSelector(`#main [data-chg="sc-growth"]`);
+    // the page slides in and its cards rise: measure where the switch is once it has stopped moving
+    await touch.waitForFunction(() => document.getAnimations().every(x => x.playState !== 'running'), null, { timeout: 5000 });
     const g0 = await touch.evaluate(k => data.scenarios[k].growth, tk);
     const box = await (await touch.$(`#main [data-chg="sc-growth"]`)).evaluate(el => { const r = el.closest('.switch').getBoundingClientRect(); return { x: r.right - 6, y: r.top + r.height / 2 }; });
     await touch.touchscreen.tap(box.x, box.y);

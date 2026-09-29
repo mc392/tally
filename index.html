@@ -337,6 +337,10 @@ textarea{width:100%; min-height:160px; border-radius:12px; border:0; padding:12p
 .ystack i{display:block; width:100%}
 .y-bf{background:var(--c-isa)} .y-pl{background:color-mix(in srgb,var(--c-isa) 45%,var(--cell))}
 .y-un, i.sq.y-un{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--red) 22%,transparent) 0 4px,transparent 4px 8px); box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--red) 55%,transparent)}
+.ybars.cmpy{height:180px}
+.ygrp{flex:1; display:flex; gap:2px; align-items:stretch; max-height:calc(100% - 20px)}
+.ygrp .ystack{flex:1; max-height:none; border-radius:4px 4px 1px 1px}
+.fx .ygrp .ystack{transform-origin:bottom; animation:growY .7s cubic-bezier(.2,.8,.2,1) both}
 .ycol .yl{font-size:11px; color:var(--label3); text-align:center; margin-top:5px; white-space:nowrap}
 .ycol .yv{font-size:11px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .m-pri, i.sq.m-pri{background:var(--c-sav)} .m-int, i.sq.m-int{background:var(--c-debt); opacity:.8}
@@ -384,6 +388,12 @@ textarea{width:100%; min-height:160px; border-radius:12px; border:0; padding:12p
 #tabbar button.on svg{animation:pop .35s cubic-bezier(.2,.8,.2,1)}
 .sheet-wrap.open .sheet .group{animation:rise .4s cubic-bezier(.2,.8,.2,1) both}
 .switch span::after{transition:transform .25s cubic-bezier(.3,1.4,.5,1)}
+/* a signed amount: Out/In (or Less/More) beside the number, since the number pad has no minus */
+.sgn{display:inline-flex; flex:none; background:var(--fill); border-radius:8px; padding:2px; gap:2px}
+.sgn button{font-size:13px; font-weight:600; padding:5px 10px; border-radius:6px; color:var(--label2); background:none; touch-action:manipulation; transition:background .15s,color .15s}
+.sgn button.on{background:var(--cell); color:var(--label); box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.sgn button[data-sgn="-"].on{color:var(--red)}
+.sgn + input.num{max-width:40%}
 /* swipe back: the page follows the finger over the one it goes back to */
 #main{position:relative}
 .swipe-under{position:absolute; left:0; right:0; z-index:0; pointer-events:none; overflow:hidden; height:100vh; transform:translateX(-30%); opacity:.6}

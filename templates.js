@@ -65,8 +65,8 @@ const TallyTemplates = (() => {
           { key: 'fees', label: 'Legal and survey fees', type: 'money' }, { key: 'moving', label: 'Moving costs', type: 'money' }] },
         { head: 'Selling the current home', foot: 'Leave both at 0 if you are not selling.', fields: [
           { key: 'sale', label: 'Sale price, after agent fees', type: 'money' }, { key: 'repay', label: 'Mortgage repaid from the sale', type: 'money' }] },
-        { head: 'Every month after the move', foot: 'Changes from today, so use a minus for a cost that goes down. This does not change the mortgage parts on the Mortgage page: update those after the move.', fields: [
-          { key: 'mortgageChange', label: 'Change in mortgage payment', type: 'money' }, { key: 'runningChange', label: 'Change in running costs', type: 'money', hint: 'Council tax, bills, insurance' }] },
+        { head: 'Every month after the move', foot: 'Changes from today: Up for a cost that rises, Down for one that falls. This does not change the mortgage parts on the Mortgage page: update those after the move.', fields: [
+          { key: 'mortgageChange', label: 'Change in mortgage payment', type: 'money', signed: ['Down', 'Up'] }, { key: 'runningChange', label: 'Change in running costs', type: 'money', signed: ['Down', 'Up'], hint: 'Council tax, bills, insurance' }] },
       ],
       defaults: () => ({ deposit: 50000, stampDuty: 5000, fees: 3000, moving: 1500, sale: 0, repay: 0, mortgageChange: 300, runningChange: 100 }),
       build: p => [

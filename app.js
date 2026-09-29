@@ -958,18 +958,21 @@ function lineSheet(arg) {
   const onlyHere = f.on === false && L.on === true && f.plan;
   const F = [
     { key: 'use', label: 'In this plan', type: 'select', options: [['as', `As set (${f.on === false ? 'off' : 'on'})`], ['on', 'On'], ['off', 'Off']] },
-    ...(f.linked ? [] : [{ key: 'amount', label: f.kind === 'oneoff' ? 'Amount (− = out)' : 'A month', type: 'money', optional: true, ph: `As set: ${nf0.format(+f.amount || 0)}`, sign: f.kind === 'oneoff' }]),
+    ...(f.linked ? [] : [{ key: 'amount', label: f.kind === 'oneoff' ? 'Amount' : 'A month', type: 'money', optional: true, ph: `As set: ${nf0.format(Math.abs(+f.amount || 0))}`,
+      ...(f.kind === 'oneoff' ? { signed: ['Out', 'In'], signDefault: +f.amount < 0 ? '-' : '+' } : f.bundle && f.kind === 'income' ? { signed: ['Less', 'More'], signDefault: +f.amount < 0 ? '-' : '+' } : {}) }]),
     { key: 'start', label: f.kind === 'oneoff' ? 'Month' : 'From', type: 'month', optional: true },
     ...(f.kind === 'oneoff' ? [] : [{ key: 'end', label: 'Until', type: 'month', optional: true }])];
   formSheet({
     title: f.name, values: { use: L.on == null ? 'as' : L.on ? 'on' : 'off', amount: L.amount ?? null, start: L.start ?? f.start, end: L.end ?? f.end },
-    sections: [{ foot: `Only ${s.name} changes. Blank amount = as set.${f.linked ? ' The mortgage payment itself comes from the mortgage.' : ''}`, fields: F }],
+    sections: [{ foot: `Only ${s.name} changes. A blank amount is as set; switching Out / In on its own flips it.${f.linked ? ' The mortgage payment itself comes from the mortgage.' : ''}`, fields: F }],
     extra: (Object.keys(L).length ? destructive(onlyHere ? 'Delete this line' : 'Use the line as set', 'reset') : ''),
     onSave: (v, act) => {
       s.lines ||= {};
       if (act === 'reset') { delete s.lines[id]; if (onlyHere && !Object.values(data.scenarios).some(x => x.lines && x.lines[id])) data.flows = data.flows.filter(x => x !== f); return changed(onlyHere ? 'Line deleted' : `${f.name}: as set in ${s.name}`); }
       const N = {};
       if (v.use !== 'as') N.on = v.use === 'on';
+      // a blank amount is "as set" - unless Out / In was switched, which flips the amount as set
+      if (v.amount == null && v.amountSign && (v.amountSign === '-') !== (+f.amount < 0) && +f.amount) v.amount = -f.amount;
       if (v.amount != null && Math.abs(v.amount - (+f.amount || 0)) > 0.004) N.amount = v.amount;
       if ((v.start || null) !== (f.start || null)) N.start = v.start || null;
       if (f.kind === 'oneoff') { if (N.start !== undefined) N.end = N.start; } else if ((v.end || null) !== (f.end || null)) N.end = v.end || null;
@@ -981,10 +984,10 @@ function lineSheet(arg) {
 function lineAddSheet(key) {
   const s = data.scenarios[key];
   const F = [
-    { key: 'kind', label: 'Kind', type: 'select', options: [['spend', 'Regular spending'], ['income', 'Regular income'], ['oneoff', 'One-off']] },
+    { key: 'kind', label: 'Kind', type: 'select', options: [['spend', 'Regular spending'], ['income', 'Regular income'], ['oneoff', 'One-off cost'], ['oneoffIn', 'One-off money in']] },
     { key: 'name', label: 'Name', type: 'text', ph: 'e.g. Nursery' },
     { key: 'category', label: 'Category', type: 'text', ph: 'e.g. Childcare', optional: true },
-    { key: 'amount', label: 'Amount', type: 'money', hint: 'A month; a one-off’s total, − for money out' },
+    { key: 'amount', label: 'Amount', type: 'money', hint: 'A month, or a one-off’s total' },
     { key: 'start', label: 'From (or the month)', type: 'month', optional: true },
     { key: 'end', label: 'Until', type: 'month', optional: true }];
   formSheet({
@@ -992,8 +995,9 @@ function lineAddSheet(key) {
     sections: [{ foot: 'It is added to this plan only. Other plans and the Plan tab don’t include it (you can switch it on in another plan too).', fields: F }],
     onSave: v => {
       if (!v.name.trim()) { toast('Give it a name', true); return false; }
-      const f = { id: uid('f'), name: v.name.trim(), kind: v.kind, amount: v.kind === 'oneoff' ? v.amount : Math.abs(v.amount), category: v.category || (v.kind === 'income' ? 'Income' : v.kind === 'oneoff' ? (v.amount < 0 ? 'One-off' : 'Receipt') : 'Other'),
-        owner: null, start: v.start, end: v.kind === 'oneoff' ? v.start : v.end, inflates: v.kind === 'spend', growth: 0, bundle: null, on: false, plan: key };
+      const oneIn = v.kind === 'oneoffIn', kind = oneIn ? 'oneoff' : v.kind, amount = kind === 'oneoff' ? (oneIn ? 1 : -1) * Math.abs(v.amount) : Math.abs(v.amount);
+      const f = { id: uid('f'), name: v.name.trim(), kind, amount, category: v.category || (kind === 'income' ? 'Income' : kind === 'oneoff' ? (amount < 0 ? 'One-off' : 'Receipt') : 'Other'),
+        owner: null, start: v.start, end: kind === 'oneoff' ? v.start : v.end, inflates: kind === 'spend', growth: 0, bundle: null, on: false, plan: key };
       data.flows.push(f); (s.lines ||= {})[f.id] = { on: true };
       changed(`${f.name} added to ${s.name}`);
     },
@@ -1700,7 +1704,7 @@ function calendarMonthSheet(m) {
     sections: [
       ...(regular.filter(f => f.kind === 'income').length ? [{ head: 'Coming in this month', fields: regular.filter(f => f.kind === 'income').map(f => ({ key: 'f_' + f.id, label: label(f), type: 'money', hint: f.overrides && f.overrides[m] != null ? `Set by hand · usually ${money(f.amount)}` : '' })) }] : []),
       ...(regular.filter(f => f.kind === 'spend').length ? [{ head: 'Going out this month', foot: 'A figure you change here is used exactly for this month, with no inflation added. Put it back to the usual amount to undo it.', fields: regular.filter(f => f.kind === 'spend').map(f => ({ key: 'f_' + f.id, label: label(f), type: 'money', hint: f.overrides && f.overrides[m] != null ? `Set by hand · usually ${money(f.amount)}` : '' })) }] : []),
-      ...(oneoffs.length ? [{ head: 'One-offs this month', foot: 'Minus for money out.', fields: oneoffs.map(f => ({ key: 'o_' + f.id, label: label(f), type: 'money' })) }] : [])],
+      ...(oneoffs.length ? [{ head: 'One-offs this month', fields: oneoffs.map(f => ({ key: 'o_' + f.id, label: label(f), type: 'money', signed: ['Out', 'In'] })) }] : [])],
     extra: `<section class="group"><div class="list"><button class="row act-row" data-sact="add-oneoff"><div class="main"><div class="ttl">Add a one-off in ${fMonth(m + '-01')}</div></div></button></div></section>`,
     onSave: (v, act) => {
       if (act === 'add-oneoff') { setTimeout(() => eventSheet(null, null, m), 360); return; }
@@ -1843,19 +1847,32 @@ const CMP_CHARTS = [
   { k: 'spend', g: 'time', t: 'Spending each month', d: 'Life events and plan-only costs show here' },
   { k: 'mix', g: 'at', t: 'Where the money is', d: 'What each plan holds, and owes, on a date' },
   { k: 'why', g: 'at', t: 'Why they differ', d: 'Each part of the gap from the first plan' },
-  { k: 'score', g: 'at', t: 'Scorecard', d: 'Six questions, the best answer marked' },
+  { k: 'score', g: 'at', t: 'Scorecard', d: 'A handful of questions - net worth, cash, interest, ISA allowance lost - with the best answer marked' },
   { k: 'tight', g: 'line', t: 'Tight months', d: 'Money you could reach within days (cash and instant-access cash ISAs) above your cash floor, month by month' },
   { k: 'marks', g: 'line', t: 'What happens when', d: 'One-offs and mortgage changes on a timeline' },
+  { k: 'isaYears', g: 'isa', t: 'ISA allowance, tax year by tax year', d: 'Each plan’s allowance used, and what it would lose' },
+  { k: 'isaCum', g: 'isa', t: 'ISA allowance used, running total', d: 'Against all the allowance there has been so far' },
+  { k: 'isaReview', g: 'isa', t: 'ISA allowance review', d: 'Used and lost per tax year, with the best plan marked' },
 ];
-const CMP_GROUPS = [['time', 'Over time'], ['at', 'On a date'], ['line', 'Timelines']];
-const CMP_DEFAULT = ['net', 'diff', 'pay', 'cash', 'left', 'mix', 'why', 'score'];
-const cmpCharts = () => { try { const v = JSON.parse(localStorage.getItem('tally-cmp-charts')); if (Array.isArray(v)) return v.filter(k => CMP_CHARTS.some(c => c.k === k)); } catch (e) { } return CMP_DEFAULT; };
+const CMP_GROUPS = [['time', 'Over time'], ['isa', 'ISA allowance'], ['at', 'On a date'], ['line', 'Timelines']];
+const CMP_DEFAULT = ['net', 'diff', 'pay', 'cash', 'left', 'isaYears', 'isaReview', 'mix', 'why', 'score'];
+// The choice is saved with the charts that existed when it was made, so a chart added later that is in the defaults
+// still appears for someone who chose theirs before it existed. (The first saved form was a bare list, made when the
+// 17 charts before the ISA ones were all there were.)
+const CMP_FIRST17 = ['net', 'diff', 'clear', 'real', 'cash', 'avail', 'isa', 'mortgage', 'pay', 'interest', 'left', 'spend', 'mix', 'why', 'score', 'tight', 'marks'];
+const cmpCharts = () => {
+  try {
+    const v = JSON.parse(localStorage.getItem('tally-cmp-charts')); if (!v) return CMP_DEFAULT;
+    const on = Array.isArray(v) ? v : v.on || [], known = Array.isArray(v) ? CMP_FIRST17 : v.known || CMP_FIRST17;
+    return CMP_CHARTS.map(c => c.k).filter(k => on.includes(k) || (!known.includes(k) && CMP_DEFAULT.includes(k)));
+  } catch (e) { return CMP_DEFAULT; }
+};
 function cmpChartsSheet() {
   const on = new Set(cmpCharts());
   formSheet({
     title: 'Charts to show', values: Object.fromEntries(CMP_CHARTS.map(c => [c.k, on.has(c.k)])),
     sections: CMP_GROUPS.map(([g, h]) => ({ head: h, fields: CMP_CHARTS.filter(c => c.g === g).map(c => ({ key: c.k, label: c.t, type: 'toggle', hint: c.d })) })),
-    onSave: v => { try { localStorage.setItem('tally-cmp-charts', JSON.stringify(CMP_CHARTS.filter(c => v[c.k]).map(c => c.k))); } catch (e) { } render(); },
+    onSave: v => { try { localStorage.setItem('tally-cmp-charts', JSON.stringify({ on: CMP_CHARTS.filter(c => v[c.k]).map(c => c.k), known: CMP_CHARTS.map(c => c.k) })); } catch (e) { } render(); },
   });
 }
 const SC_COLORS = ['var(--c-net)', 'var(--c-isa)', 'var(--c-cash)'];
@@ -1893,9 +1910,12 @@ function vPlans() {
     score: c => card(c, scoreHTML(X), fMonth(X.date)),
     tight: c => card(c, tightHTML(X), `floor ${short(X.floor)}`),
     marks: c => card(c, marksHTML(X)),
+    isaYears: c => card(c, isaCmpYears(X), X.plans.some(u => u.isa && u.isa.lost > 0.5) ? 'unused hatched' : 'all used'),
+    isaCum: c => card(c, line('c-pl-isacum', u => u.s.isaUsed) + legend + `<p class="cnote">All the allowance there has been by then: <span class="amt">${short(P[0].s.isaAvail.at(-1) || 0)}</span> by ${esc(fMonth(P[0].rows.at(-1).date))}. A line that falls behind another is allowance that plan never uses.</p>`),
+    isaReview: c => card(c, isaCmpReview(X)),
   };
   const byGroup = g => CMP_CHARTS.filter(c => c.g === g && show.includes(c.k)).map(c => draw[c.k](c)).join('');
-  const gTime = byGroup('time'), gAt = byGroup('at'), gLine = byGroup('line');
+  const gTime = byGroup('time'), gIsa = byGroup('isa'), gAt = byGroup('at'), gLine = byGroup('line');
   const kd = [...(F != null && F >= 0 && F < H ? [['At the fix end', F]] : []), ['In 1 year', 11], ['In 3 years', 35], ['At the end', H - 1]].filter(([, j]) => j < H);
   const metrics = [['Net worth', 'net'], ['Cash', 'cash'], ['Free to overpay', 'avail'], ['Mortgage left', 'mortgage']];
   const table = kd.map(([label, j]) => `<tr class="sec"><th colspan="${P.length + 1}">${label} · ${fMonth(P[0].rows[j].date)}</th></tr>` + metrics.map(([m, f]) => {
@@ -1907,7 +1927,7 @@ function vPlans() {
     body: `<div class="chips">${Object.entries(data.scenarios).map(([k, v]) => `<button class="${keys.includes(k) ? 'on' : ''}" data-act="cmp-sc" data-arg="${k}">${esc(v.name)}</button>`).join('')}<button data-act="add-plan">＋ New plan</button></div>
       <div class="chips small">${[[36, '3 years'], [60, '5 years'], [120, '10 years']].map(([m, l]) => `<button class="${m === H ? 'on' : ''}" data-act="cmp-h" data-arg="${m}">${l}</button>`).join('')}<button data-act="cmp-charts">Charts · ${show.length} of ${CMP_CHARTS.length}</button></div>
       ${group(P.map((u, i) => row({ title: `<span class="dotc" style="background:${SC_COLORS[i]}"></span>${esc(u.name)}`, sub: planSummary(u.k), act: 'push', arg: 'scenario:' + u.k })).join(''), 'Plans compared', 'Up to three at once. Tap one to change what happens in it.')}
-      ${gTime}${gAt || gLine ? '' : ''}${gAt ? `<div class="gh" style="margin:0 16px 6px">On a date</div>${atChips}${gAt}` : ''}${gLine}
+      ${gTime}${gIsa ? `<div class="gh" style="margin:0 16px 6px">ISA allowance</div>${gIsa}` : ''}${gAt ? `<div class="gh" style="margin:0 16px 6px">On a date</div>${atChips}${gAt}` : ''}${gLine}
       ${show.length ? '' : '<p class="note">No charts chosen. Tap Charts to pick some.</p>'}
       <section class="card"><div class="gh">Key dates<b>differences against ${esc(P[0].name)}</b></div><div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${P.map(u => `<th>${esc(u.name)}</th>`).join('')}</tr></thead><tbody>${table}</tbody></table></div></section>
       <p class="note">Each plan is run on its own through the whole projection. Projections, not advice.</p>`,
@@ -1915,6 +1935,28 @@ function vPlans() {
   };
 }
 // ---- the "on a date" and timeline charts: plain HTML bars, so they read at any width ----
+// ISA allowance per tax year, each plan side by side: the column is the allowance, filled by what the plan uses,
+// with what it would lose hatched above.
+function isaCmpYears(X) {
+  const years = (X.plans[0].isa || { years: [] }).years;
+  if (!years.length) return '<p class="note">Add your balances first.</p>';
+  return `<div class="ybars cmpy">${years.map((y, yi) => `<div class="ycol"><div class="ygrp">${X.plans.map((u, i) => { const Y = u.isa && u.isa.years[yi]; if (!Y) return ''; const a = Y.allowance || 1, h = v => (Math.max(0, v) / a * 100).toFixed(2);
+      return `<div class="ystack" title="${esc(u.name)} ${esc(Y.label)}: ${money(Y.used)} used${Y.unused > 0.5 ? `, ${money(Y.unused)} unused` : ''}"><i class="y-un" style="height:${h(Y.unused)}%"></i><i style="height:${h(Y.used)}%;background:${SC_COLORS[i]}"></i></div>`; }).join('')}</div>
+      <div class="yl">${esc(y.label)}</div></div>`).join('')}</div>
+    <div class="legend">${X.plans.map((u, i) => `<span><i class="sq" style="background:${SC_COLORS[i]}"></i>${esc(u.name)}</span>`).join('')}<span><i class="sq y-un"></i>Would go unused</span></div>`;
+}
+// The review: per tax year, what each plan uses and loses, the best marked; then the total lost.
+function isaCmpReview(X) {
+  const years = (X.plans[0].isa || { years: [] }).years; if (!years.length) return '';
+  const cell = (vals, yi, f, low) => { const v = vals.map(f), b = low ? Math.min(...v) : Math.max(...v), tie = v.every(x => Math.abs(x - b) < 0.5); return v.map(x => `<td class="${!tie && Math.abs(x - b) < 0.5 ? 'best' : ''}"><span class="amt">${short(x)}</span></td>`).join(''); };
+  const rows = years.map((y, yi) => { const Ys = X.plans.map(u => (u.isa && u.isa.years[yi]) || { used: 0, unused: 0 });
+    return `<tr class="sec"><th colspan="${X.plans.length + 1}">${esc(y.label)}${y.partial ? ' (from now)' : ''} · <span class="amt">${short(y.allowance)}</span> allowance</th></tr>
+      <tr><th>Used</th>${cell(Ys, yi, Y => Y.used, false)}</tr><tr><th>Lost</th>${cell(Ys, yi, Y => Y.unused, true)}</tr>`; }).join('');
+  const tot = X.plans.map(u => (u.isa ? u.isa.lost : 0)), b = Math.min(...tot), tie = tot.every(x => Math.abs(x - b) < 0.5);
+  return `<div class="cmpwrap"><table class="cmp"><thead><tr><th></th>${X.plans.map(u => `<th>${esc(u.name)}</th>`).join('')}</tr></thead><tbody>${rows}
+    <tr class="sec"><th colspan="${X.plans.length + 1}">Over all ${years.length} tax years</th></tr><tr><th>Lost</th>${tot.map(x => `<td class="${!tie && Math.abs(x - b) < 0.5 ? 'best' : ''}"><b class="amt ${x > 0.5 && (tie || Math.abs(x - b) >= 0.5) ? 'neg' : ''}">${short(x)}</b></td>`).join('')}</tr></tbody></table></div>
+    <p class="cnote">Highlighted: the best plan for that line. Unused allowance can’t be carried into the next tax year. Open a plan’s ISA allowance screen for the month-by-month view.</p>`;
+}
 function mixHTML(X) {
   const pos = m => Math.max(0, m.cash) + Math.max(0, m.cashIsa) + Math.max(0, m.ss) + Math.max(0, m.other);
   const neg = m => Math.max(0, -m.mortgage) + Math.max(0, -m.other) + Math.max(0, -m.cash);
@@ -1937,7 +1979,7 @@ function whyHTML(X) {
 function scoreHTML(X) {
   return `<div class="score">${X.score.map(m => { const M = Math.max(1, ...m.vals.map(Math.abs));
     return `<div class="sq-m"><div class="sq-l">${esc(m.label)}<span>${m.tie ? 'the same in every plan' : m.better === 'high' ? 'higher is better' : 'lower is better'}</span></div>${m.vals.map((v, i) => `<div class="sq-r${m.best[i] ? ' best' : ''}"><span class="dotc" style="background:${SC_COLORS[i]}"></span><div class="sq-t"><i style="width:${Math.abs(v) / M * 100}%;background:${SC_COLORS[i]}"></i></div><span class="amt">${m.count ? v : money(v)}</span>${m.best[i] ? '<em>best</em>' : ''}</div>`).join('')}</div>`; }).join('')}</div>
-    <p class="cnote">Lowest cash and months below the floor are over the whole period; the rest on the date chosen.</p>`;
+    <p class="cnote">Lowest cash, months below the floor and ISA allowance lost are over the whole period; the rest on the date chosen.</p>`;
 }
 function tightHTML(X) {
   const years = X.plans[0].rows.map((r, i) => (r.date.slice(5, 7) === '01' ? `<span style="left:${i / X.n * 100}%">${r.date.slice(0, 4)}</span>` : '')).join('');
@@ -1996,7 +2038,7 @@ function vBundle(id) {
         row({ title: 'Starts', value: b.start ? fMonth(b.start) : 'Not set', vsub: 'moving it moves every line', act: 'edit-bundle', arg: id }) +
         row({ title: 'Scale', value: `${Math.round((+b.scale || 0) * 100)}%`, vsub: 'every amount', act: 'edit-bundle', arg: id }) +
         row({ title: 'Contingency', value: `${+b.contingency || 0}%`, vsub: 'added to costs', act: 'edit-bundle', arg: id }), 'Settings')}
-      ${kinds.map(([k, h, act]) => { const l = lines.filter(f => f.kind === k); return l.length ? group(l.map(f => lineRow(f, act)).join(''), h, k === 'income' ? 'A minus figure is a drop from usual pay during the period.' : '') : ''; }).join('')}
+      ${kinds.map(([k, h, act]) => { const l = lines.filter(f => f.kind === k); return l.length ? group(l.map(f => lineRow(f, act)).join(''), h, k === 'income' ? 'An income change marked Less is a drop from usual pay during the event; switching the event off restores usual pay.' : '') : ''; }).join('')}
       ${group(row({ title: 'Add an income change', act: 'add-income', arg: 'b:' + id, cls: 'act-row', chev: false }) + row({ title: 'Add a monthly cost', act: 'add-spend', arg: 'b:' + id, cls: 'act-row', chev: false }) + row({ title: 'Add a one-off item', act: 'add-event', arg: 'b:' + id, cls: 'act-row', chev: false }))}
       <p class="note">Every amount came from a template as a placeholder: check each one against your own situation. None of it is advice.</p>`,
   };
@@ -2048,9 +2090,9 @@ function templateReview({ bundle, flows }) {
   const kindWord = { income: 'income change a month', spend: 'cost a month', oneoff: 'one-off' };
   formSheet({
     title: 'Check each line', values: vals,
-    sections: [{ head: bundle.name, foot: 'Change any amount, or switch a line off to leave it out. Income changes can be negative: a drop from usual pay. Nothing is saved until you tap Save.', fields: flows.flatMap((f, i) => [
+    sections: [{ head: bundle.name, foot: 'Change any amount, or switch a line off to leave it out. An income change can be Less (a drop from usual pay) or More. Nothing is saved until you tap Save.', fields: flows.flatMap((f, i) => [
       { key: 'on' + i, label: f.name, type: 'toggle', hint: `${flowWhen(f)} · ${kindWord[f.kind]}${f.note ? ' · ' + f.note : ''}` },
-      { key: 'a' + i, label: f.kind === 'spend' ? 'Cost a month' : f.kind === 'income' ? 'Change a month' : 'Amount (minus = out)', type: 'money' }]) }],
+      { key: 'a' + i, label: f.kind === 'spend' ? 'Cost a month' : f.kind === 'income' ? 'Change a month' : 'Amount', type: 'money', ...(f.kind === 'income' ? { signed: ['Less', 'More'] } : f.kind === 'oneoff' ? { signed: ['Out', 'In'] } : {}) }]) }],
     onSave: v => {
       const keep = flows.filter((f, i) => { f.amount = v['a' + i]; return v['on' + i]; });
       data.bundles.push(bundle); data.flows.push(...keep);
@@ -2491,6 +2533,10 @@ function sheet({ title, body, done = 'Save', onDone, onOpen }) {
   const submit = e => { e && e.preventDefault(); if (onDone && onDone(form, close) !== false) close(); };
   if (done) w.querySelector('.done').onclick = submit;
   form.addEventListener('submit', submit);
+  form.addEventListener('click', e => {
+    const sg = e.target.closest('[data-sgn]');
+    if (sg) { e.preventDefault(); const box = sg.parentElement; box.querySelector('input').value = sg.dataset.sgn; box.querySelectorAll('button').forEach(x => { x.classList.toggle('on', x === sg); x.setAttribute('aria-pressed', String(x === sg)); }); }
+  });
   form.addEventListener('click', e => { const b = e.target.closest('[data-sact]'); if (b) { e.preventDefault(); b.dataset.sact === 'close' ? close() : onDone && onDone(form, close, b.dataset.sact); } });
   onOpen && onOpen(form, close);
   return { close, form };
@@ -2503,6 +2549,12 @@ function fieldHTML(f, v) {
   if (f.type === 'select') return `<div class="field${f.stack ? ' stack' : ''}">${lab}<select id="${id}" name="${f.key}">${f.options.map(([ov, ol]) => `<option value="${esc(ov)}" ${String(ov) === String(v ?? '') ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select></div>`;
   if (f.type === 'date') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="date" value="${esc(v || '')}"></div>`;
   if (f.type === 'month') return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="month" value="${esc(v ? String(v).slice(0, 7) : '')}" placeholder="YYYY-MM"></div>`;
+  // A money field that can go either way (f.signed = [label for minus, label for plus]) shows the amount as a plain
+  // number beside a two-way switch: the iPhone's number pad has no minus key, so a sign can't be typed there.
+  if (f.signed) {
+    const neg = v != null && v !== '' ? +v < 0 : f.signDefault === '-', abs = v == null || v === '' ? '' : nf2.format(Math.abs(v)).replace(/\.00$/, '');
+    return `<div class="field">${lab}<span class="sgn" role="group" aria-label="${esc(f.signed.join(' or '))}"><button type="button" data-sgn="-" class="${neg ? 'on' : ''}" aria-pressed="${neg}">${esc(f.signed[0])}</button><button type="button" data-sgn="+" class="${neg ? '' : 'on'}" aria-pressed="${!neg}">${esc(f.signed[1])}</button><input type="hidden" name="${f.key}__sgn" value="${neg ? '-' : '+'}"></span><input id="${id}" name="${f.key}" type="text" inputmode="decimal" class="num" value="${esc(abs)}" placeholder="${esc(f.ph || (f.optional ? 'Not set' : ''))}" autocomplete="off"></div>`;
+  }
   const shown = v == null || v === '' ? '' : (f.type === 'money' ? nf2.format(v).replace(/\.00$/, '') : String(v));
   const mode = f.type === 'text' ? 'text' : 'decimal';
   return `<div class="field">${lab}<input id="${id}" name="${f.key}" type="text" inputmode="${mode}" class="${f.type === 'text' ? 'wide' : 'num'}" value="${esc(shown)}" placeholder="${esc(f.ph || (f.optional ? 'Not set' : ''))}" autocomplete="off">${f.unit ? `<span class="unit">${f.unit}</span>` : ''}</div>`;
@@ -2514,7 +2566,13 @@ function readFields(form, fields) {
     if (f.type === 'toggle') out[f.key] = el.checked;
     else if (f.type === 'text' || f.type === 'select' || f.type === 'date') out[f.key] = el.value || (f.optional ? null : '');
     else if (f.type === 'month') out[f.key] = /^\d{4}-\d{2}/.test(el.value) ? el.value.slice(0, 7) : null;
-    else { const n = parseNum(el.value); out[f.key] = n == null ? (f.optional ? null : 0) : n; }
+    else {
+      let n = parseNum(el.value);
+      // a signed field: the switch gives the sign, unless a minus was typed (on a keyboard that has one)
+      if (f.signed) out[f.key + 'Sign'] = (form.elements[f.key + '__sgn'] || {}).value || '+'; // kept even when the box is blank
+      if (f.signed && n != null && n > 0 && out[f.key + 'Sign'] === '-') n = -n;
+      out[f.key] = n == null ? (f.optional ? null : 0) : n;
+    }
   }
   return out;
 }
@@ -2641,7 +2699,7 @@ function incomeSheet(id, inBundle) {
   const x = id ? flowById(id) : { name: '', owner: data.people[0].id, amount: 0, growth: 0, start: inBundle ? inBundle.start : null, end: null };
   formSheet({
     title: id ? 'Edit income' : 'New income', values: x,
-    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'owner', label: 'Whose', type: 'select', options: ownerOpts() }, { key: 'amount', label: 'Monthly, after tax', type: 'money', unit: '' }, { key: 'growth', label: 'Extra rise each April', type: 'percent', unit: '%', hint: 'On top of the scenario pay rise' }] },
+    sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'owner', label: 'Whose', type: 'select', options: ownerOpts() }, { key: 'amount', label: inBundle || x.bundle ? 'Change a month' : 'Monthly, after tax', type: 'money', unit: '', ...(inBundle || x.bundle ? { signed: ['Less', 'More'], hint: 'Less: a drop from usual pay' } : {}) }, { key: 'growth', label: 'Extra rise each April', type: 'percent', unit: '%', hint: 'On top of the scenario pay rise' }] },
     { head: 'When', foot: 'For example, reduced pay during parental leave: add it as its own income with dates, and end the usual pay the month before.', fields: whenFields }],
     extra: id ? destructive('Delete income', 'delete') : '',
     onSave: (v, act) => {
