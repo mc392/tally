@@ -235,6 +235,8 @@ The period up to the remortgage decision needs the most accuracy.
 > **Also done:** interest rates are kept by date - a new rate applies from its date, and every earlier period keeps the rate it had. Account pickers show the full name, whose it is and the type; accounts with the same name show the owner everywhere.
 >
 > **Also done:** a full balance update can leave any account out with a tick; history charts start at your first own update and count each account only from its first balance; Spending insights - spending, money in, or both, by month and by category, shop or account, over 3, 6 or 12 months, the tax year or everything, with what's changing, the largest items and the transactions behind every figure.
+>
+> **Also done:** plans with their own paths - add, copy and delete plans; in each, what happens to every mortgage part at its fix end (float, fix again at a rate or at the market price, or a saved deal), which life events happen, and its own version of any income or spending line, or lines only it has. Compare plans is a gallery of 17 charts to choose from. Figures hide every time you come back to the app.
 
 ## Phase 2: Transactions and spend analysis
 
