@@ -6,7 +6,7 @@ const framed = (() => { try { return window.self !== window.top; } catch (e) { r
 
 let data = null;
 // base = writer mark of the file version this device last read or wrote (see storage.js)
-let meta = { fileName: null, dirty: false, savedAt: null, private: false, encrypt: false, base: null, conflict: false };
+let meta = { fileName: null, dirty: false, savedAt: null, private: true, encrypt: false, base: null, conflict: false };
 const ui = { tab: 'home', stacks: { home: [], accounts: [], projection: [], plan: [] }, owner: 'all', scenario: null, horizon: null, anim: '' };
 
 // ---------- formatting ----------
@@ -2350,7 +2350,7 @@ const actions = {
   back: () => { ui.stacks[ui.tab].pop(); ui.anim = 'pop-in'; render({ top: true }); },
   update: d => updateSheet(d || null),
   save: saveFile, 'open-file': openFile, paste: pasteSheet,
-  'new-file': async () => { data = blankFile(); meta = { fileName: 'family-finances.json', dirty: true, savedAt: null, private: false, encrypt: false, base: null, conflict: false }; await TS.setHandle(null); await refreshRoute(); persist(); render(); },
+  'new-file': async () => { data = blankFile(); meta = { fileName: 'family-finances.json', dirty: true, savedAt: null, private: true, encrypt: false, base: null, conflict: false }; await TS.setHandle(null); await refreshRoute(); persist(); render(); },
   encrypt: encryptSheet, decrypt: decryptSheet,
   reconnect: async () => { await TS.permission(true); if (await refreshRoute() !== 'live') return toast('Tally still can’t write to the file', true); await syncFromFile(); if (meta.dirty && !meta.conflict) saveFile(); else toast('Reconnected to ' + TS.handle.name); },
   resolve: async () => { if (await refreshRoute() !== 'live') return toast('Reconnect to your file first', true); const cur = parseFile((await TS.readHandle()).text); if (cur && TS.isConflict(cur.writer, meta.base)) conflictSheet(cur.writer); else { meta.conflict = false; persist(); saveFile(); } },
@@ -2403,6 +2403,9 @@ window.addEventListener('beforeunload', e => { if (meta.dirty && !framed) { e.pr
 
 // ---------- start ----------
 restore();
+// Figures start hidden every time the app is opened, whatever they were when it was last closed: the eye in the
+// header shows them for this visit. Opening it on a train should never put balances on the screen.
+meta.private = true;
 readyBaseline();
 loadCurve();
 if (!framed && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });

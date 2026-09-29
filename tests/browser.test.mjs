@@ -62,6 +62,9 @@ try {
   await page.waitForFunction(() => data && fileRoute === 'live');
   ok(await page.evaluate(() => data.accounts.length === 2), 'file opened from the picker');
   ok(!(await page.$('#navR [data-act="save"]')), 'no Save button while saving is automatic');
+  ok(await page.evaluate(() => document.body.classList.contains('private')), 'figures start hidden');
+  await page.click('[data-act="private"]');
+  ok(await page.evaluate(() => !document.body.classList.contains('private')), 'the eye shows them');
 
   console.log('Live save');
   await page.evaluate(() => { data.bufferPct = 7; changed(); });
@@ -114,6 +117,8 @@ try {
   await page.waitForFunction(() => fileRoute === 'live' && meta.encrypt);
   ok(!(await page.$('.sheet-wrap.open #p_p1')), 'no passphrase asked on a device that already has the key');
   ok(await page.evaluate(() => data.bufferPct === 11), 'encrypted file opened with its figures');
+  ok(await page.evaluate(() => document.body.classList.contains('private')), 'reopening hides the figures again, though they were shown when it closed');
+  await page.click('[data-act="private"]');
 
   console.log('Opening on a new device');
   const page2 = await (await browser.newContext()).newPage();
