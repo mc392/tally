@@ -210,6 +210,49 @@ function household(o = {}) {
   console.log('  ✓ flat at today’s rates reproduces the old projection exactly; no curve falls back to it; access rules unchanged');
 }
 
+// ---------- Rate impact: the same scenario as set up, all on market rates, all flat ----------
+{
+  const o = {
+    accounts: [
+      { id: 'sav', name: 'Saver', type: 'savings', rate: 3, rateModel: { kind: 'variable', passThrough: 0.6, lagMonths: 2 } },
+      { id: 'bond', name: 'Bond', type: 'savings', access: 'fixed', maturity: '2027-03', rate: 5 },
+      { id: 'cisa', name: 'Cash ISA', type: 'cash_isa', rate: 4 }],
+    balances: { sav: 10000, bond: 15000, cisa: 20000 },
+    parts: [{ id: 'main', payment: 900, balance: 120000, rate: 2.1, fixEnd: '2027-06', newRate: 6.5, termEnd: '2045-01' }],
+  };
+  const d = household(o), I = E.rateImpact(d, 's', 60);
+  assert.deepStrictEqual(I.runs.setup.rows, E.project(d, 's', 60).rows, 'as set up = the ordinary projection');
+  assert.deepStrictEqual(I.runs.flat.rows, E.project(household({ ...o, rates: { kind: 'flat' } }), 's', 60).rows, 'all flat = the flat scenario');
+  assert.strictEqual(I.layers.setup.modelled, 1, 'as set up: only the saver is on market rates');
+  assert.strictEqual(I.layers.market.modelled, 4, 'all on market: saver, bond, cash ISA and the mortgage');
+  assert.ok(d.accounts.every(a => a.id === 'sav' ? a.rateModel : !a.rateModel) && !d.mortgage.parts[0].rateModel, 'the data itself is untouched');
+  // per item: balance, rate, interest for each lens; the instant cash ISA is the pool
+  assert.deepStrictEqual(I.items.map(x => x.key), ['sav', 'bond', 'cashIsaPool', 'main']);
+  const bond = I.items.find(x => x.key === 'bond');
+  assert.ok(bond.rate.flat.every(r => r === 5) && bond.rate.setup.every(r => r === 5), 'the bond is flat unless put on market rates');
+  assert.ok(bond.rate.market.slice(0, 14).every(r => r === 5) && bond.rate.market[14] !== 5, 'on market rates it holds 5% until March 2027, then moves');
+  const main = I.items.find(x => x.key === 'main');
+  assert.strictEqual(main.rate.flat[20], 6.5); assert.notStrictEqual(main.rate.market[20], 6.5, 'the mortgage after its fix: 6.5% flat, the market path otherwise');
+  near(main.balance.setup[59], I.runs.setup.rows[59].mortgageParts[0].bal, 'mortgage balance per lens');
+  for (const l of ['setup', 'market', 'flat']) {
+    near(I.totals[l].mortgageInterest, I.runs[l].rows.reduce((s, r) => s + r.mortgageInterest, 0), `${l}: mortgage interest over the period`);
+    near(I.totals[l].interestEarned, I.items.filter(x => x.kind !== 'part').reduce((s, x) => s + x.interest[l].reduce((a, b) => a + b, 0), 0), `${l}: interest earned is the sum over the items`);
+  }
+  // nothing on market rates: as set up = all flat; everything on market rates: as set up = all on market
+  const none = E.rateImpact(household({ ...o, accounts: o.accounts.map(({ rateModel, ...a }) => a) }), 's', 60);
+  assert.deepStrictEqual(none.runs.setup.rows, none.runs.flat.rows, 'no models: as set up is the flat projection');
+  const allOn = household(o);
+  const full = E.rateImpact({ ...allOn, accounts: allOn.accounts.map(a => ({ ...a, rateModel: a.rateModel || C.defaultModel({ category: 'savings', access: a.access }) })), mortgage: { ...allOn.mortgage, parts: allOn.mortgage.parts.map(p => ({ ...p, rateModel: C.defaultModel({ category: 'mortgage', fixEnd: p.fixEnd }) })) } }, 's', 60);
+  assert.deepStrictEqual(full.runs.setup.rows, full.runs.market.rows, 'all on market already: as set up = all on market');
+  // no curve in the file: the market lens has nothing to follow, so it is the flat one, and says so
+  const nc = E.rateImpact(household({ ...o, curve: null }), 's', 60);
+  assert.deepStrictEqual(nc.runs.market.rows, nc.runs.flat.rows); assert.strictEqual(nc.layers.market.reason, 'no-curve');
+  // a scenario set to flat still shows the market lens (on the market curve)
+  const fl = E.rateImpact(household({ ...o, rates: { kind: 'flat' } }), 's', 60);
+  assert.ok(fl.layers.market.active && fl.layers.market.kind === 'market' && !fl.layers.setup.active);
+  console.log('  ✓ rate impact: as set up, all on market rates and all flat, per account and mortgage part, data untouched');
+}
+
 // ---------- Pipeline ----------
 {
   assert.ok(C.validate(hump).ok, 'a good curve passes');

@@ -596,6 +596,19 @@ try {
   await page.evaluate(() => { ui.tab = 'accounts'; ui.stacks.accounts = []; actions.push('acct:sav'); });
   await page.waitForSelector('#main #c-ratepath');
   ok((await page.textContent('#main')).includes('In the projection'), 'an account’s page shows its rate rule and path');
+  // what rates change: as set up, all on market rates, all flat
+  await page.evaluate(() => { ui.tab = 'projection'; ui.stacks.projection = ['rates']; render(); });
+  await page.click('#main [data-act="push"][data-arg="impact"]');
+  await page.waitForSelector('#main #c-imp-net');
+  const imp = await page.textContent('#main');
+  ok(imp.includes('All on market rates') && imp.includes('All flat') && imp.includes('Every scenario'), '“What rates change” shows the three ways side by side, and every scenario');
+  ok(await page.evaluate(() => { const I = rateImpact(data, scenarioKey(), ui.impH || 60); return document.querySelectorAll('#main .chart[id^="c-imp-"]').length === I.items.length + 1 && I.items.some(x => x.kind === 'part'); }), 'a chart for each account and the mortgage, plus net worth against flat');
+  await page.click('#main [data-act="imp-view"][data-arg="rate"]');
+  await page.waitForFunction(() => ui.impView === 'rate' && document.querySelector('#main #c-imp-0'));
+  ok((await page.textContent('#main')).includes('Rate, '), 'and the same for rates');
+  await page.evaluate(() => { meta.private = false; render(); }); await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-impact.png'), fullPage: true });
+  await page.evaluate(() => { meta.private = true; ui.impView = 'balance'; render(); });
   await page.evaluate(() => { ui.tab = 'plan'; ui.stacks.plan = ['mortgage', 'ready', 'compare']; render(); });
   await page.waitForSelector('#main [data-act="add-option-market"]');
   ok((await page.textContent('#main')).includes('Market-implied at Jun 2027'), 'Compare deals prices a 2- and 5-year fix from the market at the switch');
