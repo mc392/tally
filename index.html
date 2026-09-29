@@ -154,9 +154,27 @@ button.row:active, .row.tap:active{background:var(--cell-hi)}
 .chart .cursor{position:absolute; top:0; bottom:18px; width:1px; background:var(--label3); display:none; pointer-events:none}
 .chart .dot{position:absolute; width:9px; height:9px; margin:-4.5px 0 0 -4.5px; border-radius:50%; border:2px solid var(--cell); display:none; pointer-events:none}
 .chart.scrub .cursor,.chart.scrub .dot{display:block}
+.pos{color:var(--green)}
+.chart.bars .bplot{position:relative; margin-right:34px}
+.chart.bars .bgrid{position:absolute; left:0; right:-34px; border-top:1px solid var(--sep); pointer-events:none}
+.chart.bars .bgrid span{position:absolute; right:0; top:-8px; font-size:11px; color:var(--label3); font-variant-numeric:tabular-nums}
+.chart.bars .bavg{position:absolute; left:0; right:0; border-top:1.5px dashed var(--label2); pointer-events:none; z-index:1}
+.chart.bars .bcols{position:absolute; inset:0; display:flex; gap:2px}
+.bcol{flex:1; min-width:0; height:100%; display:flex; align-items:flex-end; justify-content:center; gap:2px; border-radius:6px; position:relative; padding:0; background:none}
+.bcol i{display:block; width:min(16px,38%); min-height:0; border-radius:4px 4px 0 0}
+.bcol.part i{opacity:.4}
+.bcol.on{background:var(--fill)}
+.bcol .bx{position:absolute; top:100%; margin-top:5px; font-size:11px; color:var(--label3); white-space:nowrap}
+.chart.bars{padding-bottom:20px}
+.readout .s.sub{font-weight:400; color:var(--label2)}
+.linkbtn{margin-left:auto; color:var(--accent); font-size:15px; padding:2px 0; background:none}
+.spark{display:inline-flex; align-items:flex-end; gap:1px; height:18px; margin-right:10px; vertical-align:middle}
+.spark i{flex:1; background:var(--label3); opacity:.55; border-radius:1px}
+.private .spark{visibility:hidden}
 .legend{display:flex; gap:14px; font-size:12px; color:var(--label2); margin-top:10px; flex-wrap:wrap}
 .legend span{display:flex; align-items:center; gap:5px}
 .legend i{width:14px; height:2px; border-radius:1px; display:inline-block}
+.legend i.sq{width:9px; height:9px; border-radius:2px}
 .legend i.dash{background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 7px)!important}
 
 /* ---------- key stats grid ---------- */
@@ -213,6 +231,13 @@ button.row:active, .row.tap:active{background:var(--cell-hi)}
 .switch span::after{content:""; position:absolute; top:2px; left:2px; width:27px; height:27px; border-radius:50%; background:#fff; box-shadow:0 3px 8px rgba(0,0,0,.15),0 3px 1px rgba(0,0,0,.06); transition:transform .22s}
 .switch input:checked + span{background:#34C759}
 .switch input:checked + span::after{transform:translateX(20px)}
+.tick{position:relative; width:24px; height:24px; flex:none}
+.tick input{position:absolute; opacity:0; width:44px; height:44px; left:-10px; top:-10px; margin:0; cursor:pointer}
+.tick span{pointer-events:none; position:absolute; inset:0; border-radius:50%; border:1.5px solid var(--label3); transition:background .15s,border-color .15s}
+.tick input:checked + span{background:var(--accent); border-color:var(--accent)}
+.tick input:checked + span::after{content:""; position:absolute; left:8px; top:4px; width:5px; height:10px; border:solid #fff; border-width:0 2px 2px 0; transform:rotate(45deg)}
+.tick input:focus-visible + span{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
+.field.out label, .field.out .amtin{opacity:.4}
 .amtin{display:flex; align-items:baseline; gap:2px; color:var(--label2); font-family:var(--round); flex:none}
 .field .amtin input.bal-in{width:6.8em; border:0; background:var(--fill); border-radius:8px; padding:7px 10px; margin:6px 0; text-align:right; font-family:var(--round); font-size:17px; color:var(--label); outline:none}
 .field .amtin input.bal-in:focus{box-shadow:0 0 0 2px var(--accent)}

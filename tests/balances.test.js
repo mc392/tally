@@ -62,6 +62,17 @@ d.snapshots.push({ date: '2026-08-01', balances: { cur: 50, sav: 60, ss: 70 } })
 assert.deepStrictEqual(E.latestSnapshot(d).balances, { cur: 50, sav: 60, ss: 70 });
 console.log('  ✓ a balance for one account on its own; the projection starts from all of them');
 
+// ---- history charts: an account counts only from its first entered balance ----
+// a card whose statement goes back before the first balance entered for it can be worked out backwards
+d = household(); d.accounts.push({ id: 'late', name: 'Late card', type: 'card', owner: 'M', active: true }); d = TM.migrate(d);
+d.snapshots.push({ date: '2026-05-01', balances: { late: -5000 } });
+d.transactions.push({ id: 'l1', account: 'late', date: '2026-04-01', amount: -250, description: 'SHOP' });
+assert.ok(E.positionOn(d, '2026-03-01').balances.late != null, 'worked out backwards when asked for the plain position');
+assert.ok(!('late' in E.positionOn(d, '2026-03-01', { entered: true }).balances), 'left out of the history before its first balance');
+near(E.positionOn(d, '2026-05-01', { entered: true }).balances.late, -5000, 'and counted from that date');
+assert.deepStrictEqual(E.positionOn(d, '2026-07-01', { entered: true }).balances, E.positionOn(d, '2026-07-01').balances, 'once every account has started, the two agree');
+console.log('  ✓ history leaves an account out before its first balance');
+
 // ---- the checks ----
 d = household();
 d.snapshots.push({ date: '2026-10-01', balances: { cur: 2500, sav: 11500 } });

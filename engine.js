@@ -118,9 +118,14 @@ function balanceOn(data, id, date) {
 }
 // Every account's balance on a date, in the snapshot shape the rest of the engine reads. `how` says,
 // per account, whether it was entered or worked out.
-function positionOn(data, date) {
+// opts.entered: leave out an account on a date before its first entered balance - what history charts show,
+// so a line never starts with figures worked backwards from a balance entered later.
+function positionOn(data, date, opts = {}) {
   const balances = {}, how = {};
-  for (const a of data.accounts) { const b = balanceOn(data, a.id, date); if (b) { balances[a.id] = Math.round(b.v * 100) / 100; how[a.id] = b.how; } }
+  for (const a of data.accounts) {
+    if (opts.entered) { const o = observations(data, a.id)[0]; if (!o || o.date > date) continue; }
+    const b = balanceOn(data, a.id, date); if (b) { balances[a.id] = Math.round(b.v * 100) / 100; how[a.id] = b.how; }
+  }
   return { date, balances, how };
 }
 const latestDate = data => data.snapshots.reduce((m, s) => (s.date > m ? s.date : m), '');
