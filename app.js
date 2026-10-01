@@ -474,7 +474,6 @@ function vHome() {
   });
 
   const lowest = pr.rows.reduce((b, r) => r.closing < b.closing ? r : b, pr.rows[0]);
-  const nextEv = TM.effectiveFlows(data).filter(e => e.kind === 'oneoff' && e.on && e.start && e.start >= thisMonth()).sort((a, b) => a.start.localeCompare(b.start))[0];
   const bud = monthlyBudget(data, thisMonth());
   const sc = data.scenarios[scenarioKey()];
 
@@ -491,6 +490,7 @@ function vHome() {
     <div class="stale">${days <= 0 ? 'Updated today' : `Last updated ${days} day${days === 1 ? '' : 's'} ago`}${meta.dirty ? ' · not yet saved to your file' : ''}</div>
     <section class="card"><div class="gh">Net worth, actual and projected<b>${esc(sc.name)}</b></div>${ch}
       <div class="legend"><span><i style="background:var(--c-net)"></i>Recorded</span><span style="color:var(--c-isa)"><i class="dash"></i><span style="color:var(--label2)">Projected ${horizon()} months</span></span></div></section>
+    ${upcomingCard()}
     ${isaCard()}
     ${group(POOLS.map(p => {
       const v = poolTotal(last, p), pv = prev ? poolTotal(prev, p) : null;
@@ -500,8 +500,7 @@ function vHome() {
     ${group(
       row({ title: `ISA pot by ${fMonth(end.date)}`, value: amt(end.isa), strong: true, act: 'tab', arg: 'projection' }) +
       row({ title: `Cash by ${fMonth(end.date)}`, value: amt(end.closing), act: 'tab', arg: 'projection' }) +
-      row({ title: 'Lowest cash month', sub: fMonth(lowest.date), value: amt(lowest.closing, { color: true }), act: 'push', arg: 'month:' + lowest.k, cls: 'tap' }) +
-      (nextEv ? row({ title: 'Next big item', sub: `${esc(nextEv.name)} · ${fMonth(nextEv.start)}`, value: amt(nextEv.amount, { color: true, sign: true }), act: 'push', arg: 'events' }) : ''),
+      row({ title: 'Lowest cash month', sub: fMonth(lowest.date), value: amt(lowest.closing, { color: true }), act: 'push', arg: 'month:' + lowest.k, cls: 'tap' }),
       `Looking ahead<b>${esc(sc.name)} scenario</b>`)}
     ${data.transactions.length ? group(actualsLine(), 'Actual spending') : ''}
     ${isaNudge()}
@@ -808,7 +807,7 @@ function vProjection() {
         ['scenario:' + sk, 'sliders', `${sc.name}`, 'This plan’s settings'], ['plans', 'compare', 'Compare plans', `${Object.keys(data.scenarios).length} plans`],
         ['isayear', 'isa', 'ISA allowance', 'Tax year by tax year'], ['mortgage', 'home', 'Mortgage', 'Balance paid down'],
         ['risk', 'risk', 'Stress tests', 'Range of outcomes'], ['rates', 'rates', 'Interest rates', 'Market or flat'],
-        ['impact', 'impact', 'What rates change', 'Account by account'], ['events', 'cal', 'Upcoming', `${flowsOf('oneoff').filter(e => e.on).length} items`]])}
+        ['impact', 'impact', 'What rates change', 'Account by account'], ['events', 'cal', 'Upcoming', (S => S.due.length ? `${S.due.length} to check` : `${S.ahead.filter(e => e.on).length} to come`)(oneoffStates())]])}
       <section class="card"><div class="gh">Net worth and ISAs<b>from ${fDate(pr.snapDate)}</b></div>${c1}
         <div class="legend"><span><i style="background:var(--c-net)"></i>Net worth</span><span><i style="background:var(--c-isa)"></i>ISAs</span><span><i style="background:var(--red)"></i>Payment</span><span><i style="background:var(--green)"></i>Receipt</span>${bands.length ? '<span><i style="background:var(--accent);opacity:.3"></i>Life events</span>' : ''}</div></section>
       <section class="card"><div class="gh">Cash held<b>floor ${amt(+data.rules.cashFloor)}</b></div>${c2}</section>
@@ -1051,6 +1050,7 @@ function vPlan() {
         <div style="grid-column:span 2"><div class="k">Surplus</div><div class="v amt ${b.surplus < 0 ? 'neg' : ''}">${money(b.surplus)} a month</div>
           <div class="bar-mini"><i style="width:${Math.max(0, Math.min(100, b.surplus / (b.income || 1) * 100))}%"></i></div><div class="n">${Math.round(b.surplus / (b.income || 1) * 100)}% of take-home kept</div></div>
       </div>
+      ${group(upcomingRow(), 'One-offs')}
       ${group(inc + row({ title: 'Add income', act: 'add-income', cls: 'act-row', chev: false }), 'Income (monthly, after tax)')}
       ${group(Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => row({ title: esc(c), value: amt(v), vsub: `${short(v * 12)} a year`, act: 'push', arg: 'spending:' + c })).join('') +
         row({ title: 'Buffer for the unexpected', value: `${data.bufferPct}%`, act: 'edit-buffer' }) + row({ title: 'Add spending', act: 'add-spend', cls: 'act-row', chev: false }), 'Spending (monthly)')}
@@ -1059,7 +1059,6 @@ function vPlan() {
       ${group(data.bundles.map(bundleRow).join('') + row({ title: 'Add a life event', act: 'add-bundle', cls: 'act-row', chev: false }), 'Life events', data.bundles.length ? 'Each event is a set of dated lines you can switch on or off, move or scale as one.' : 'A baby, a move, a renovation, a car, a big trip or time off work, as a set of dated costs and income changes you can switch on and off.')}
       ${group(
         row({ title: 'Mortgage', sub: mt.parts.length > 1 ? `${mt.parts.length} parts` : '', value: amt(mt.payment), vsub: mt.balance != null ? `${short(mt.balance)} owed` : 'balance not set', act: 'push', arg: 'mortgage' }) +
-        row({ title: 'Upcoming payments and receipts', value: String(flowsOf('oneoff').filter(e => e.on).length), act: 'push', arg: 'events' }) +
         row({ title: 'Cash-flow calendar', sub: 'The next 24 months, each one editable', act: 'push', arg: 'calendar' }), 'Commitments')}
       ${group(
         row({ title: 'Cash floor', value: amt(r.cashFloor), act: 'edit-rules' }) +
@@ -1097,15 +1096,77 @@ function vSpending(cat) {
   };
 }
 
+// ---- upcoming one-offs: where each one stands ----
+// The projection starts in the month of the latest balance update. An item whose month has come and is still being
+// counted is "due" until it is marked paid (with the date), moved later or switched off. One planned before that
+// month and never marked is not counted: those balances already hold it, if it happened.
+function oneoffStates() {
+  const last = latestSnapshot(data), snapD = last ? last.date : null, from = snapD ? snapD.slice(0, 7) : thisMonth(), now = thisMonth();
+  const out = { snapD, due: [], ahead: [], done: [] };
+  for (const e of flowsOf('oneoff').sort((a, b) => String(TM.oneoffMonth(a)).localeCompare(String(TM.oneoffMonth(b))))) {
+    if (e.paid) out.done.push(e);
+    else if (!e.start || e.start > now) out.ahead.push(e);
+    else if (e.on && e.start >= from) out.due.push(e);
+    else out.done.push(e);
+  }
+  out.done.reverse(); // most recent first
+  return out;
+}
+const clears = e => e.settles ? ` · clears ${esc(acc(e.settles)?.name || '')}` : '';
+const dueRow = e => row({ title: esc(e.name), sub: `${e.start === thisMonth() ? 'Due this month' : 'Was due ' + fMonth(e.start)} · still counted${clears(e)}`, value: amt(e.amount, { color: true, sign: true }), vsub: '<span class="pill warn">Paid?</span>', act: 'event-due', arg: e.id });
+const aheadRow = e => row({ title: esc(e.name), sub: flowWhen(e) + clears(e), value: amt(e.amount, { color: true, sign: true }), act: 'edit-event', arg: e.id, right: sw(e.on, 'ev-on', e.id), chev: false });
+function doneRow(e, snapD) {
+  const why = e.paid ? `Paid ${fDate(e.paid)} · ${snapD && e.paid <= snapD ? 'in your balances' : 'counted until your next balance update'}`
+    : !e.on ? `${fMonth(e.start)} · switched off` : `${fMonth(e.start)} · not counted`;
+  return row({ title: esc(e.name), sub: why, value: amt(e.amount, { sign: true }), cls: 'dim', act: 'edit-event', arg: e.id });
+}
+const dueFoot = 'Their month has come and the projection still counts them. Mark each one paid, with the date, or move it later if it hasn’t happened yet.';
+
+// Overview's card: anything to check first, then the next few items, each with its switch
+function upcomingCard() {
+  const S = oneoffStates(), next = S.ahead.filter(e => e.start).slice(0, 4), n = S.ahead.length;
+  return group(S.due.map(dueRow).join('') + next.map(aheadRow).join('') +
+    (n > next.length || S.done.length ? row({ title: 'All upcoming items', sub: `${n} to come${S.done.length ? ` · ${S.done.length} paid or past` : ''}`, act: 'push', arg: 'events' }) : '') +
+    row({ title: 'Add a payment or receipt', act: 'add-event', cls: 'act-row', chev: false }),
+    `Upcoming${S.due.length ? `<b>${S.due.length} to check</b>` : ''}`, S.due.length ? dueFoot : next.length ? 'Switch an item off if it’s no longer happening; tap it to change the amount or month.' : 'One-off payments and receipts: a holiday, a car, a bonus, a tax bill.');
+}
+// one line where the list isn't shown (Plan)
+function upcomingRow() {
+  const S = oneoffStates(), nx = S.ahead.find(e => e.on && e.start);
+  return row({ title: 'Upcoming payments and receipts', sub: nx ? `Next: ${esc(nx.name)} · ${fMonth(nx.start)}` : 'Nothing planned', value: S.due.length ? `<span class="pill warn">${S.due.length} to check</span>` : String(S.ahead.filter(e => e.on).length), act: 'push', arg: 'events' });
+}
+
 function vEvents() {
-  const ev = flowsOf('oneoff').sort((a, b) => String(a.start).localeCompare(String(b.start)));
-  const net = ev.filter(e => e.on).reduce((s, e) => s + e.amount, 0);
+  const S = oneoffStates(), net = S.ahead.filter(e => e.on && e.start).reduce((t, e) => t + e.amount, 0);
   return {
     title: 'Upcoming', large: true, back: 'Back', right: `<button class="iconbtn" data-act="add-event" aria-label="Add item">${PLUS}</button>`,
-    body: `${group(ev.map(e => row({ title: esc(e.name), sub: flowWhen(e) + (e.settles ? ` · clears ${esc(acc(e.settles)?.name || '')}` : ''), value: amt(e.amount, { color: true, sign: true }), act: 'edit-event', arg: e.id, right: sw(e.on, 'ev-on', e.id), chev: false })).join('') || row({ title: 'Nothing planned' }),
-      `One-off items<b>net ${money(net, { sign: true })}</b>`, 'Switch items off to see the projection without them. They stay here for later.')}
-      ${group(row({ title: 'Add a payment or receipt', act: 'add-event', cls: 'act-row', chev: false }))}`,
+    body: `${S.due.length ? group(S.due.map(dueRow).join(''), `Has it been paid?<b>${S.due.length}</b>`, dueFoot) : ''}
+      ${group(S.ahead.map(aheadRow).join('') || row({ title: 'Nothing planned' }),
+      `Coming up<b>net ${amt(net, { sign: true })}</b>`, 'Switch items off to see the projection without them. They stay here for later.')}
+      ${group(row({ title: 'Add a payment or receipt', act: 'add-event', cls: 'act-row', chev: false }))}
+      ${S.done.length ? group(S.done.map(e => doneRow(e, S.snapD)).join(''), 'Paid and past',
+        `A paid item counts in the month it was paid, until a balance update on or after that date includes it. An item from before your latest update${S.snapD ? ` (${fDate(S.snapD)})` : ''} is no longer counted: those balances already include it.`) : ''}`,
   };
+}
+
+// An item whose month has come: paid (and when), not yet (move it on a month), or not happening at all
+function dueSheet(id) {
+  const e = flowById(id), after = TM.shiftMonth(e.start > thisMonth() ? e.start : thisMonth(), 1);
+  formSheet({
+    title: e.name, done: 'Mark paid', values: { paid: todayISO() },
+    sections: [{ head: `${e.amount < 0 ? 'Payment' : 'Money in'} planned for ${fMonth(e.start)}`, foot: 'Once paid it counts in the month it was paid, and drops out of the projection when a balance update on or after that date already includes it.', fields: [{ key: 'paid', label: 'Paid on', type: 'date' }] }],
+    extra: `<section class="group"><div class="list">
+      <button class="row act-row" data-sact="later"><div class="main"><div class="ttl">Not yet: move it to ${fMonth(after)}</div></div></button>
+      <button class="row act-row" data-sact="off"><div class="main"><div class="ttl">It isn’t happening: switch it off</div></div></button>
+      <button class="row act-row" data-sact="edit"><div class="main"><div class="ttl">Change the amount or month</div></div></button></div></section>`,
+    onSave: (v, act) => {
+      if (act === 'later') { e.start = e.end = after; return changed(`Moved to ${fMonth(after)}`); }
+      if (act === 'off') { e.on = false; return changed('Switched off'); }
+      if (act === 'edit') { setTimeout(() => eventSheet(id), 360); return; }
+      if (!v.paid) { toast('Choose the date it was paid', true); return false; }
+      e.paid = v.paid; e.on = true; changed('Marked paid');
+    },
+  });
 }
 
 // ---------- statements: transactions, budget vs actual, recurring (Phase 2) ----------
@@ -2576,10 +2637,10 @@ function readFields(form, fields) {
   }
   return out;
 }
-function formSheet({ title, sections, values, onSave, extra = '' }) {
+function formSheet({ title, sections, values, onSave, extra = '', done }) {
   const all = sections.flatMap(s => s.fields);
   const body = sections.map(s => `<section class="group">${s.head ? `<div class="gh">${esc(s.head)}</div>` : ''}<div class="list">${s.fields.map(f => fieldHTML(f, values[f.key])).join('')}</div>${s.foot ? `<div class="gf">${esc(s.foot)}</div>` : ''}</section>`).join('') + extra;
-  sheet({ title, body, onDone: (form, close, act) => {
+  sheet({ title, body, done, onDone: (form, close, act) => {
     if (act) { onSave(null, act); close(); return; }
     const v = readFields(form, all); return onSave(v);
   } });
@@ -2736,7 +2797,8 @@ function eventSheet(id, inBundle, inMonth) {
   formSheet({
     title: id ? 'Edit item' : 'New item', values: { ...x, dir: x.amount < 0 ? 'out' : 'in', abs: Math.abs(x.amount), settles: x.settles || '' },
     sections: [{ fields: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'dir', label: 'Type', type: 'select', options: [['out', 'Payment out'], ['in', 'Money in']] }, { key: 'abs', label: 'Amount', type: 'money' }, { key: 'start', label: 'Month', type: 'month', hint: 'Counted in this month' }] },
-    { foot: 'If this payment clears a debt, choose it so the debt isn’t counted twice.', fields: [{ key: 'settles', label: 'Clears a debt', type: 'select', options: debtOpts }, { key: 'on', label: 'Include in projection', type: 'toggle' }] }],
+    { foot: 'If this payment clears a debt, choose it so the debt isn’t counted twice.', fields: [{ key: 'settles', label: 'Clears a debt', type: 'select', options: debtOpts }, { key: 'on', label: 'Include in projection', type: 'toggle' }] },
+    ...(inBundle || x.bundle ? [] : [{ foot: 'Once it’s paid, put the date: it then counts in the month it was paid, and drops out of the projection when a balance update on or after that date includes it.', fields: [{ key: 'paid', label: 'Paid on', type: 'date', optional: true }] }])],
     extra: id ? destructive('Delete item', 'delete') : '',
     onSave: (v, act) => {
       if (act === 'delete') { data.flows = data.flows.filter(f => f.id !== id); return changed('Item deleted'); }
@@ -2744,6 +2806,7 @@ function eventSheet(id, inBundle, inMonth) {
       const amount = (v.dir === 'out' ? -1 : 1) * Math.abs(v.abs);
       const rec = { name: v.name || 'Untitled', amount, start: v.start, end: v.start, on: v.on, category: amount < 0 ? 'One-off' : 'Receipt' };
       if (v.settles) rec.settles = v.settles; else if (x.settles) delete x.settles;
+      if (v.paid) rec.paid = v.paid; else if (x.paid) delete x.paid;
       if (id) Object.assign(x, rec); else data.flows.push({ id: uid('ev'), kind: 'oneoff', owner: null, inflates: false, growth: 0, bundle: inBundle ? inBundle.id : null, ...rec }); changed('Item saved');
     },
   });
@@ -2891,7 +2954,7 @@ const actions = {
   'add-account': () => accountSheet(null), 'edit-account': accountSheet,
   'add-income': a => incomeSheet(null, bundleArg(a)), 'edit-income': id => incomeSheet(id),
   'add-spend': c => bundleArg(c) ? spendSheet(null, null, bundleArg(c)) : spendSheet(null, c), 'edit-spend': id => spendSheet(id),
-  'add-event': a => eventSheet(null, bundleArg(a)), 'edit-event': id => eventSheet(id),
+  'add-event': a => eventSheet(null, bundleArg(a)), 'edit-event': id => eventSheet(id), 'event-due': id => dueSheet(id),
   'add-bundle': templatePicker, 'edit-bundle': bundleSheet,
   'edit-remortgage': remortgageSheet, 'add-option': () => optionSheet(null), 'edit-option': optionSheet, 'edit-scplan': scenarioPlanSheet, 'sc-mort': mortPathSheet, 'sc-line': lineSheet, 'sc-line-pick': linePickSheet, 'sc-line-add': lineAddSheet,
   'add-plan': () => planAddSheet(null), 'copy-plan': k => planAddSheet(k), 'del-plan': planDelete,
