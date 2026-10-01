@@ -148,4 +148,18 @@ assert.ok(m13.mortgage.parts.every(p => p.type === 'repayment'), 'an older part 
 const v12 = withParts(); v12.version = TM.VERSION;
 assert.deepStrictEqual(project(m13, 's', 36).rows, project(v12, 's', 36).rows, 'and projects exactly as without the field');
 console.log('  ✓ version 13: mortgage parts default to repayment, figures unchanged');
+// ---------- 8. version 14: a one-off can be marked paid ----------
+// £100,000 cash, nothing else moving, balances on 1 May 2026; a £2,000 repair planned for July. Projection May..Dec.
+const repair = paid => { const x = base(); x.flows.push({ id: 'rep', name: 'Repair', kind: 'oneoff', amount: -2000, start: '2026-07', end: '2026-07', on: true, ...(paid ? { paid } : {}) }); return project(x, 's', 8).rows.map(y => y.closing); };
+const L = 98000, H = 100000;
+assert.deepStrictEqual(repair(null), [H, H, L, L, L, L, L, L], 'not paid: counted in the month planned');
+assert.deepStrictEqual(repair('2026-06-10'), [H, L, L, L, L, L, L, L], 'paid early: counted in the month it was paid, not again in July');
+assert.deepStrictEqual(repair('2026-05-20'), [L, L, L, L, L, L, L, L], 'paid after the update in its month: still to come off those balances');
+assert.deepStrictEqual(repair('2026-05-01'), [H, H, H, H, H, H, H, H], 'paid on the update\'s date: already in it, so not counted');
+assert.deepStrictEqual(repair('2026-04-28'), [H, H, H, H, H, H, H, H], 'paid before it: the same');
+const v13 = base(); v13.version = 13;
+assert.strictEqual(TM.migrate(v13).version, 14);
+assert.strictEqual(TM.oneoffMonth({ start: '2026-07' }), '2026-07');
+assert.strictEqual(TM.oneoffMonth({ start: '2026-07', paid: '2026-06-10' }), '2026-06');
+console.log('  ✓ version 14: a paid one-off counts in the month paid, and not at all once a balance update holds it');
 console.log('All migration checks pass ✓');

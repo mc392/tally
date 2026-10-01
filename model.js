@@ -7,7 +7,7 @@
 //              start and stop on a month: {id, name, kind:'income'|'spend'|'oneoff', amount, start, end,
 //              category, owner, inflates, growth, bundle, on, linked?, settles?}
 //              income/spend amounts are MONTHLY and positive; a oneoff is the total, signed (− = out).
-//              start/end are 'YYYY-MM' or null (open-ended). A oneoff happens in its start month.
+//              start/end are 'YYYY-MM' or null (open-ended). A oneoff happens in its start month, or in the month it was paid (paid: 'YYYY-MM-DD', v14).
 //   accounts[].access - how quickly the money can be used: instant | notice | fixed | invested | locked,
 //              with noticeDays (notice) and maturity 'YYYY-MM' (fixed). Liabilities have none.
 //   accounts[].flexible - cash ISAs only: money taken out can go back in the same tax year.
@@ -84,7 +84,7 @@
 //   rateBasis - {source, asOf, curve, previous?}: the Bank of England curve this file's projections use, kept in the
 //              file so any projection can be re-run offline and "as at" the curve it was made with. Public data.
 const TallyModel = (() => {
-  const VERSION = 13;
+  const VERSION = 14;
   const REMORTGAGE = { leadMonths: 6, decideMonths: 2, earmarkMonths: 12, warnAt: 5000, glide: false, glideMonths: 12, target: null };
   const JOINT = 'J';
   const ISA_PER_PERSON = 20000;
@@ -170,6 +170,7 @@ const TallyModel = (() => {
     }
     d.rateBasis ??= null;
     for (const b of d.bundles) { b.on ??= true; b.scale ??= 1; b.contingency ??= 0; }
+    // v14: one-offs may carry `paid` (absent = not paid yet), so there is nothing to fill in
     for (const f of d.flows) { f.start ??= null; f.end ??= null; f.bundle ??= null; f.on ??= true; f.inflates ??= false; f.growth ??= 0; }
     (d.accounts || []).forEach(defaultAccess);
     const r = d.rules ||= {};
@@ -189,11 +190,16 @@ const TallyModel = (() => {
   // Is this flow counted in the month with key k (year × 12 + month − 1)?
   function flowActive(f, k) {
     if (f.on === false) return false;
-    if (f.kind === 'oneoff' && !f.start) return false; // a one-off with no month never happens
+    if (f.kind === 'oneoff') { const m = oneoffMonth(f); return !!m && k === monthKey(m); } // a one-off with no month never happens
     if (f.start && k < monthKey(f.start)) return false;
     if (f.end && k > monthKey(f.end)) return false;
     return true;
   }
+
+  // v14: a one-off marked paid (`paid: 'YYYY-MM-DD'`) happens in the month it was paid, not the month planned.
+  const oneoffMonth = f => (f.paid ? String(f.paid).slice(0, 7) : f.start) || null;
+  // Paid on or before a balance update means those balances already hold it, so a projection from them leaves it out.
+  const inBalances = (f, snapDate) => f.kind === 'oneoff' && !!f.paid && !!snapDate && f.paid <= snapDate;
 
   // The flows the projection should use: life events that are off are dropped, and each event's
   // scale and contingency applied. Flows not in an event (or in one that no longer exists) pass through.
@@ -263,7 +269,7 @@ const TallyModel = (() => {
     return g;
   }
 
-  return { VERSION, REMORTGAGE, rateOn, growthFactor, bundleOn, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, monthKey, isaPeople, month };
+  return { VERSION, REMORTGAGE, rateOn, growthFactor, bundleOn, effectiveFlows, shiftMonth, shiftBundle, bundleSpan, JOINT, ISA_PER_PERSON, ACCESS, LIABILITIES, migrate, fromV1, flowActive, oneoffMonth, inBalances, monthKey, isaPeople, month };
 })();
 
 if (typeof module !== 'undefined') module.exports = TallyModel;

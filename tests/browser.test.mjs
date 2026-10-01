@@ -47,11 +47,14 @@ function fakeFs(initial) {
 
 let passed = 0;
 const ok = (c, m) => { assert.ok(c, m); passed++; console.log('  ✓ ' + m); };
+// The suite's sample data and its expectations are set in September 2026 (Jul-Sep statements, "September is still
+// running"), so the browser's clock is fixed there; timers still run normally.
+const sept = async c => { await c.clock.setFixedTime(new Date('2026-09-20T10:00:00')); return c; };
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
 try {
   // reduced motion: headline figures count up and switches wait for their knob when motion is on, which would make
   // reading the screen straight after a tap racy. The switches are also tested with motion on, by touch, below.
-  const ctx = await browser.newContext({ reducedMotion: 'reduce' });
+  const ctx = await browser.newContext({ reducedMotion: 'reduce' }); await sept(ctx);
   const page = await ctx.newPage();
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.addInitScript(fakeFs, JSON.stringify(sample));
@@ -126,7 +129,7 @@ try {
   await page.click('[data-act="private"]');
 
   console.log('Opening on a new device');
-  const page2 = await (await browser.newContext({ reducedMotion: 'reduce' })).newPage();
+  const page2 = await (await sept(await browser.newContext({ reducedMotion: 'reduce' }))).newPage();
   page2.on('pageerror', e => errors.push(e.message));
   await page2.addInitScript(fakeFs, raw);
   await page2.goto(url);
@@ -687,7 +690,7 @@ try {
   await page.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
 
   console.log('Switches, by touch, with motion on');
-  const touch = await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })).newPage();
+  const touch = await (await sept(await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }))).newPage();
   touch.on('pageerror', e => errors.push(e.message));
   await touch.addInitScript(fakeFs, JSON.stringify(sample));
   await touch.goto(url); await touch.click('button[data-act="new-file"]');
@@ -733,6 +736,53 @@ try {
   await drag([[4, 400], [120, 400], [300, 400]]);
   ok(await touch.evaluate(() => ui.tab === 'projection' && !document.querySelector('.swipe-under')), 'nothing to go back to: the gesture is ignored');
   await touch.close();
+
+  console.log('Upcoming items, and items whose month has come');
+  {
+    // the sample's balances are dated 1 Sep 2026 and the clock reads 20 Sep 2026
+    const up = await (await sept(await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' }))).newPage();
+    up.on('pageerror', e => errors.push(e.message));
+    await up.addInitScript(fakeFs, JSON.stringify(sample));
+    await up.goto(url); await up.click('button[data-act="open-file"]');
+    await up.waitForFunction(() => data && fileRoute === 'live');
+    await up.evaluate(() => {
+      const f = (id, name, amount, start) => ({ id, name, kind: 'oneoff', amount, start, end: start, on: true, category: amount < 0 ? 'One-off' : 'Receipt', owner: null, inflates: false, growth: 0, bundle: null });
+      data.flows.push(f('cartax', 'Car tax', -300, '2026-09'), f('dep', 'Holiday deposit', -500, '2026-08'), f('boiler', 'Boiler', -2500, '2026-11'), f('bon', 'Bonus', 4000, '2027-03'), f('mot', 'MOT', -60, '2026-09'));
+      meta.private = false; document.body.classList.remove('private'); changed(); actions.tab('home');
+    });
+    await up.waitForSelector('#main [data-act="event-due"]');
+    const home = await up.textContent('#main');
+    ok(home.includes('Upcoming') && home.includes('2 to check') && home.includes('Car tax') && home.includes('Boiler') && home.includes('Bonus'), 'Overview shows the upcoming items, with the two whose month has come to check first');
+    ok(!home.includes('Holiday deposit'), 'an item from before the latest balances is not on Overview');
+    await up.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-upcoming-home.png'), fullPage: true });
+    await up.click('#main [data-chg="ev-on"][data-arg="boiler"]');
+    await up.waitForFunction(() => data.flows.find(f => f.id === 'boiler').on === false);
+    ok(true, 'an item can be switched off straight from Overview');
+    await up.evaluate(() => actions.push('events'));
+    await up.waitForFunction(() => document.querySelector('#main').textContent.includes('Paid and past'));
+    const ev = await up.textContent('#main');
+    ok(ev.includes('Has it been paid?') && /Holiday deposit.*Aug 2026 · not counted/.test(ev) && ev.includes('before your latest update (1 Sep 2026) is no longer counted'), 'the Upcoming screen splits to check, coming up, and paid and past');
+    await up.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-upcoming.png'), fullPage: true });
+    // paid on 15 Sep, after the 1 Sep balances: still counted, in September
+    await up.click('#main [data-act="event-due"][data-arg="cartax"]');
+    await up.waitForSelector('.sheet-wrap.open #f_paid');
+    await up.screenshot({ path: path.join(process.env.SHOTS || '/tmp', 'tally-upcoming-due.png') });
+    await up.fill('.sheet-wrap.open #f_paid', '2026-09-15'); await up.click('.sheet-wrap.open .done');
+    await up.waitForFunction(() => data.flows.find(f => f.id === 'cartax').paid === '2026-09-15');
+    ok(await up.evaluate(() => project(data, scenarioKey(), 2).rows[0].events.some(e => e.id === 'cartax')), 'marked paid after the latest balances: still counted, in the month it was paid');
+    ok(await up.evaluate(() => document.querySelector('#main').textContent.includes('Paid 15 Sep 2026 · counted until your next balance update')), 'and listed as paid, counted until the next update');
+    // not yet: moved on to next month
+    await up.waitForTimeout(400);
+    await up.click('#main [data-act="event-due"][data-arg="mot"]');
+    await up.waitForSelector('.sheet-wrap.open [data-sact="later"]'); await up.click('.sheet-wrap.open [data-sact="later"]');
+    await up.waitForFunction(() => data.flows.find(f => f.id === 'mot').start === '2026-10');
+    ok(await up.evaluate(() => !document.querySelector('#main [data-act="event-due"]')), 'not yet: moved to October, and nothing is left to check');
+    // a balance update on 20 Sep holds the car tax, so it drops out
+    await up.evaluate(() => { data.snapshots.push({ date: '2026-09-20', balances: { ...latestSnapshot(data).balances } }); changed(); });
+    ok(await up.evaluate(() => !project(data, scenarioKey(), 2).rows[0].events.some(e => e.id === 'cartax')), 'once a balance update on or after the paid date exists, it is no longer counted');
+    await up.waitForFunction(() => !meta.dirty, null, { timeout: 5000 });
+    await up.close();
+  }
 
   console.log('Newer files');
   const refused = await page.evaluate(async () => { const f = JSON.stringify({ app: 'tally', version: TallyModel.VERSION + 1, accounts: [], snapshots: [] }); return await loadText(f, 'future.json'); });

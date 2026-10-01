@@ -283,7 +283,9 @@ function project(data, scenarioKey, months, opts = {}) {
   // ISA allowance is per person. Top-ups fill people in r.isaFillOrder: the first person's allowance
   // is used up before the next person's. Re-deposit room (money taken out of a flexible ISA, which can
   // go back in the same tax year without new allowance) is tracked for the household.
-  const flows = EM.effectiveFlows(data, sc); // life events applied (as this scenario has them): off ones dropped, scale and contingency in
+  // life events applied (as this scenario has them): off ones dropped, scale and contingency in;
+  // and a one-off paid by the latest update left out, because its balances already hold it
+  const flows = EM.effectiveFlows(data, sc).filter(f => !EM.inBalances(f, snap.date));
   let ty = taxYearOf(k0);
   const who = r.isaFillOrder && r.isaFillOrder.length ? r.isaFillOrder : ['M'];
   const per = +r.isaPerPerson || 0;
